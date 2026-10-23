@@ -556,9 +556,9 @@ int ObArrayCastUtils::string_cast_map(common::ObIAllocator &alloc,
   // add quote to numberic key if it not exists
   std::regex regex_quote(R"((\{|,)\s*(-?\d+(\.\d+)?(?:[eE][-+]?\d+)?)\s*:)");
   src_text = std::regex_replace(src_text, regex_quote, R"($1"$2":)");
-  // change null key in any case to NULL
+  // Quote the normalized NULL key for JSON parsers that require quoted object keys.
   std::regex regex_null(R"((\{|,)\s*\"?(n|N)(u|U)(l|L)(l|L)\s*\"?\s*:)");
-  src_text = std::regex_replace(src_text, regex_null, R"($1NULL:)");
+  src_text = std::regex_replace(src_text, regex_null, R"($1"NULL":)");
   // parse text to json node
   const char *syntaxerr = NULL;
   uint64_t err_offset = 0;
