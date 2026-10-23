@@ -145,7 +145,7 @@ int ObExprVecIVFPQCenterIds::calc_pq_center_ids(
       ret = OB_ERR_NULL_VALUE;
     }
 
-    // 1. eval cur vector, pq m and pq tablet location
+    // 1. eval cur vector, pq m and PQ tablet access
     ObIArrayType *arr = NULL;
     // is_empty_pq_ids = true means that the cluster center has not been generated or the current input vector is null. 
     // In this case, all pq ids is set to 1.
@@ -169,13 +169,13 @@ int ObExprVecIVFPQCenterIds::calc_pq_center_ids(
     } else if (FALSE_IT(res_len = ObVecIVFPQCenterIDS::get_total_size(pq_m, nbits))) {
     } else if (OB_ISNULL(vb_buf = expr.get_str_res_mem(eval_ctx, res_len))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
-    } else if (OB_FAIL(ObVectorIndexUtil::calc_location_ids(
+    } else if (OB_FAIL(ObVectorIndexUtil::resolve_access_ids(
           eval_ctx, 
           calc_pq_centroid_table_id_expr, 
           calc_pq_centroid_part_id_expr, 
           pq_cent_table_id, 
           pq_cent_tablet_id))) {
-    } else if (OB_FAIL(ObVectorIndexUtil::calc_location_ids(
+    } else if (OB_FAIL(ObVectorIndexUtil::resolve_access_ids(
           eval_ctx, 
           calc_centroid_table_id_expr, 
           calc_centroid_part_id_expr, 

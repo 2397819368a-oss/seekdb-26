@@ -216,10 +216,6 @@ The read and write operation on fetch log info in sliding window of palf should 
 
 The read and write operation on sw match lsn map in sliding window of palf should be mutually exclusive.
 
-## spinlock: palf sw location cache cb lock wait
-
-The read and write operation on sw location cache cb in sliding window of palf should be mutually exclusive.
-
 ## spinlock: palf cm config data lock wait
 
 The read and write operation on config data in config mgr of palf should be mutually exclusive.

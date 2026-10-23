@@ -5021,7 +5021,7 @@ int ObVectorIndexUtil::calc_residual_vector(
   return ret;
 }
 
-int ObVectorIndexUtil::calc_location_ids(sql::ObEvalCtx &eval_ctx,
+int ObVectorIndexUtil::resolve_access_ids(sql::ObEvalCtx &eval_ctx,
                                         sql::ObExpr *table_id_expr,
                                         sql::ObExpr *part_id_expr,
                                         ObTableID &table_id,
@@ -5070,7 +5070,7 @@ int ObVectorIndexUtil::eval_ivf_centers_common(ObIAllocator &allocator,
     if (OB_ISNULL(calc_vector_expr) || calc_vector_expr->datum_meta_.type_ != ObCollectionSQLType) {
       ret = OB_INVALID_ARGUMENT;
     } else if (OB_FAIL(ObArrayExprUtils::get_type_vector(*(calc_vector_expr), eval_ctx, allocator, arr, contain_null))) {
-    } else if (OB_FAIL(ObVectorIndexUtil::calc_location_ids(eval_ctx, calc_table_id_expr, calc_part_id_expr, table_id, tablet_id))) {
+    } else if (OB_FAIL(ObVectorIndexUtil::resolve_access_ids(eval_ctx, calc_table_id_expr, calc_part_id_expr, table_id, tablet_id))) {
     } else if (OB_ISNULL(calc_distance_algo_expr) || calc_distance_algo_expr->datum_meta_.type_ != ObUInt64Type) {
       ret = OB_INVALID_ARGUMENT;
     } else if (OB_FAIL(calc_distance_algo_expr->eval(eval_ctx, res))) {

@@ -807,7 +807,7 @@ public:
     const float *center_vec,
     float *residual
   );
-  static int calc_location_ids(sql::ObEvalCtx &eval_ctx,
+  static int resolve_access_ids(sql::ObEvalCtx &eval_ctx,
                                sql::ObExpr *table_id_expr,
                                sql::ObExpr *part_id_expr,
                                ObTableID &table_id,

@@ -1690,9 +1690,9 @@ int ObLobManager::build_lob_param(ObLobAccessParam& param,
       param.timeout_ = timeout;
       // outrow arg for do lob meta scan
       if (OB_SUCC(ret) && lob.is_persist_lob() && !lob.has_inrow_data()) {
-        ObMemLobLocationInfo *location_info = nullptr;
-        if (OB_FAIL(lob.get_location_info(location_info))) {
-        } else if (OB_FALSE_IT(param.tablet_id_ = ObTabletID(location_info->tablet_id_))) {
+        LobAccessInfo *access_info = nullptr;
+        if (OB_FAIL(lob.get_access_info(access_info))) {
+        } else if (OB_FALSE_IT(param.tablet_id_ = ObTabletID(access_info->tablet_id_))) {
         } else if (OB_FAIL(param.set_tx_read_snapshot(lob))) {
         }
       }

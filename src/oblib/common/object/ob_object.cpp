@@ -108,11 +108,11 @@ DEF_TO_STRING(ObLobLocatorV2)
             J_KV(K(*tx_info));
             J_COMMA();
           }
-          if (buf_len > pos && extern_header->flags_.has_location_info_
-              && size_ >= offset + MEM_LOB_EXTERN_LOCATIONINFO_LEN) {
-            ObMemLobLocationInfo *location_info = reinterpret_cast<ObMemLobLocationInfo *>(ptr_ + offset);
-            offset += MEM_LOB_EXTERN_LOCATIONINFO_LEN;
-            J_KV(K(*location_info));
+          if (buf_len > pos && extern_header->flags_.has_access_info_
+              && size_ >= offset + MEM_LOB_EXTERN_ACCESSINFO_LEN) {
+            LobAccessInfo *access_info = reinterpret_cast<LobAccessInfo *>(ptr_ + offset);
+            offset += MEM_LOB_EXTERN_ACCESSINFO_LEN;
+            J_KV(K(*access_info));
             J_COMMA();
           }
           if (buf_len > pos && extern_header->flags_.has_retry_info_
@@ -174,8 +174,8 @@ uint32_t ObLobLocatorV2::calc_locator_full_len(const ObMemLobExternFlags &flags,
     if (flags.has_tx_info_) {
       loc_len += MEM_LOB_EXTERN_TXINFO_LEN;
     }
-    if (flags.has_location_info_) {
-      loc_len += MEM_LOB_EXTERN_LOCATIONINFO_LEN;
+    if (flags.has_access_info_) {
+      loc_len += MEM_LOB_EXTERN_ACCESSINFO_LEN;
     }
     if (flags.has_retry_info_) {
       loc_len += MEM_LOB_EXTERN_RETRYINFO_LEN;
@@ -260,9 +260,9 @@ int ObLobLocatorV2::fill(ObMemLobType type,
           offset += MEM_LOB_EXTERN_TXINFO_LEN;
           *extern_len += MEM_LOB_EXTERN_TXINFO_LEN;
         }
-        if (flags.has_location_info_) {
-          offset += MEM_LOB_EXTERN_LOCATIONINFO_LEN;
-          *extern_len += MEM_LOB_EXTERN_LOCATIONINFO_LEN;
+        if (flags.has_access_info_) {
+          offset += MEM_LOB_EXTERN_ACCESSINFO_LEN;
+          *extern_len += MEM_LOB_EXTERN_ACCESSINFO_LEN;
         }
         if (flags.has_retry_info_) {
           offset += MEM_LOB_EXTERN_RETRYINFO_LEN;
@@ -552,7 +552,7 @@ int ObLobLocatorV2::get_tx_info(ObMemLobTxInfo *&tx_info) const
   return ret;
 }
 
-int ObLobLocatorV2::get_location_info(ObMemLobLocationInfo *&location_info) const
+int ObLobLocatorV2::get_access_info(LobAccessInfo *&access_info) const
 {
   int ret =  OB_SUCCESS;
   ObMemLobExternHeader *extern_header = NULL;
@@ -561,11 +561,11 @@ int ObLobLocatorV2::get_location_info(ObMemLobLocationInfo *&location_info) cons
     if (extern_header->flags_.has_tx_info_) {
       cur_pos += MEM_LOB_EXTERN_TXINFO_LEN;
     }
-    if (extern_header->flags_.has_location_info_) {
-      location_info = reinterpret_cast<ObMemLobLocationInfo *>(cur_pos);
+    if (extern_header->flags_.has_access_info_) {
+      access_info = reinterpret_cast<LobAccessInfo *>(cur_pos);
     } else {
       ret = OB_ERR_NULL_VALUE;
-      COMMON_LOG(WARN, "Lob: does not have location info", K(this), K(ret));
+      COMMON_LOG(WARN, "Lob: does not have access info", K(this), K(ret));
     }
   }
   return ret;
@@ -580,8 +580,8 @@ int ObLobLocatorV2::get_retry_info(ObMemLobRetryInfo *&retry_info) const
     if (extern_header->flags_.has_tx_info_) {
       cur_pos += MEM_LOB_EXTERN_TXINFO_LEN;
     }
-    if (extern_header->flags_.has_location_info_) {
-      cur_pos += MEM_LOB_EXTERN_LOCATIONINFO_LEN;
+    if (extern_header->flags_.has_access_info_) {
+      cur_pos += MEM_LOB_EXTERN_ACCESSINFO_LEN;
     }
     if (extern_header->flags_.has_retry_info_) {
       retry_info = reinterpret_cast<ObMemLobRetryInfo *>(cur_pos);
@@ -602,8 +602,8 @@ int ObLobLocatorV2::get_read_snapshot_data(ObString &read_snapshot_data) const
     if (extern_header->flags_.has_tx_info_) {
       cur_pos += MEM_LOB_EXTERN_TXINFO_LEN;
     }
-    if (extern_header->flags_.has_location_info_) {
-      cur_pos += MEM_LOB_EXTERN_LOCATIONINFO_LEN;
+    if (extern_header->flags_.has_access_info_) {
+      cur_pos += MEM_LOB_EXTERN_ACCESSINFO_LEN;
     }
     if (extern_header->flags_.has_retry_info_) {
       cur_pos += MEM_LOB_EXTERN_RETRYINFO_LEN;
@@ -772,13 +772,13 @@ int ObLobLocatorV2::set_tx_info(const ObMemLobTxInfo &tx_info)
   return ret;
 }
 
-int ObLobLocatorV2::set_location_info(const ObMemLobLocationInfo &location_info)
+int ObLobLocatorV2::set_access_info(const LobAccessInfo &access_info)
 {
   validate_has_lob_header(has_lob_header_);
   int ret = OB_SUCCESS;
-  ObMemLobLocationInfo *loc_info_ptr = NULL;
-  if (OB_SUCC(get_location_info(loc_info_ptr))) {
-    *loc_info_ptr = location_info;
+  LobAccessInfo *access_info_ptr = NULL;
+  if (OB_SUCC(get_access_info(access_info_ptr))) {
+    *access_info_ptr = access_info;
   }
   return ret;
 }

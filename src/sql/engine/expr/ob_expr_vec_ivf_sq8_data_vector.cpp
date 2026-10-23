@@ -137,7 +137,7 @@ int ObExprVecIVFSQ8DataVector::generate_data_vector(
     } else if (OB_FAIL(ObArrayExprUtils::get_type_vector(*(calc_vector_expr), eval_ctx, tmp_allocator, arr, contain_null))) {
     } else if (contain_null) {
       expr_datum.set_null();
-    } else if (OB_FAIL(ObVectorIndexUtil::calc_location_ids(eval_ctx, calc_table_id_expr, calc_part_id_expr, table_id, tablet_id))) {
+    } else if (OB_FAIL(ObVectorIndexUtil::resolve_access_ids(eval_ctx, calc_table_id_expr, calc_part_id_expr, table_id, tablet_id))) {
     } else {
       ObFixedArray<float*, ObIAllocator> meta_vectors(tmp_allocator);
       query::ObIVectorIndexService *service = ::oceanbase::share::server_service<::oceanbase::query::ObIVectorIndexService>();

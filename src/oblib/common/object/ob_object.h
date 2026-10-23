@@ -764,11 +764,11 @@ struct ObMemLobCommon
 struct ObMemLobExternFlags
 {
   ObMemLobExternFlags() :
-    has_tx_info_(0), has_location_info_(1), has_retry_info_(1), has_read_snapshot_(1), reserved_(0)
+    has_tx_info_(0), has_access_info_(1), has_retry_info_(1), has_read_snapshot_(1), reserved_(0)
   {}
 
   ObMemLobExternFlags(bool enable) :
-    has_tx_info_(0), has_location_info_(enable), has_retry_info_(enable), has_read_snapshot_(enable), reserved_(0)
+    has_tx_info_(0), has_access_info_(enable), has_retry_info_(enable), has_read_snapshot_(enable), reserved_(0)
   {} 
 
   ObMemLobExternFlags(const ObMemLobExternFlags &flags) { *this = flags; }
@@ -783,10 +783,10 @@ struct ObMemLobExternFlags
     return (*(reinterpret_cast<uint16_t *>(this)) = 0);
   }
 
-  TO_STRING_KV(K_(has_tx_info), K_(has_location_info), K_(has_retry_info), K_(has_read_snapshot), K_(reserved));
+  TO_STRING_KV(K_(has_tx_info), K_(has_access_info), K_(has_retry_info), K_(has_read_snapshot), K_(reserved));
 
   uint16_t has_tx_info_ : 1; // Indicate whether tx info exists
-  uint16_t has_location_info_ : 1; // Indicate whether has cid exists (reserved)
+  uint16_t has_access_info_ : 1; // Indicate whether has cid exists (reserved)
   uint16_t has_retry_info_ : 1; // Indicate whether has retry info exists
   uint16_t has_read_snapshot_ : 1; // Indicate whether has ObTxReadSnapshot
   uint16_t reserved_ : 12;
@@ -851,10 +851,10 @@ struct ObMemLobReadSnapshot
   char data_[0];
 };
 
-struct ObMemLobLocationInfo
+struct LobAccessInfo
 {
-  ObMemLobLocationInfo(){}
-  ObMemLobLocationInfo(int64_t table_id, ObCollationType collation_id) :
+  LobAccessInfo(){}
+  LobAccessInfo(int64_t table_id, ObCollationType collation_id) :
     tablet_id_(table_id), cid_(collation_id)
   {}
   TO_STRING_KV(K_(tablet_id), K_(cid));
@@ -864,15 +864,16 @@ struct ObMemLobLocationInfo
   char data_[0];
 };
 
+// Reserved fields keep the existing locator payload layout. Only read_latest_ is consumed.
 struct ObMemLobRetryInfo
 {
-  ObMemLobRetryInfo() : is_select_leader_(true), read_latest_(false), reserved_(0), addr_(), timeout_(0) {}
-  TO_STRING_KV(K_(is_select_leader), K_(read_latest), K_(reserved), K_(addr), K_(timeout));
-  int64_t is_select_leader_ : 1;
+  ObMemLobRetryInfo() : reserved_flag_(true), read_latest_(false), reserved_(0), reserved_addr_(), reserved_timeout_(0) {}
+  TO_STRING_KV(K_(reserved_flag), K_(read_latest), K_(reserved), K_(reserved_addr), K_(reserved_timeout));
+  int64_t reserved_flag_ : 1;
   int64_t read_latest_ : 1;
   int64_t reserved_ : 62;
-  ObAddr addr_;
-  uint64_t timeout_;
+  ObAddr reserved_addr_;
+  uint64_t reserved_timeout_;
 };
 
 OB_INLINE void validate_has_lob_header(const bool &has_header)
@@ -898,7 +899,7 @@ public:
   static const uint32_t MEM_LOB_COMMON_HEADER_LEN = sizeof(ObMemLobCommon);
   static const uint32_t MEM_LOB_EXTERN_HEADER_LEN = sizeof(ObMemLobExternHeader);
   static const uint32_t MEM_LOB_EXTERN_TXINFO_LEN = sizeof(ObMemLobTxInfo);
-  static const uint32_t MEM_LOB_EXTERN_LOCATIONINFO_LEN = sizeof(ObMemLobLocationInfo);
+  static const uint32_t MEM_LOB_EXTERN_ACCESSINFO_LEN = sizeof(LobAccessInfo);
   static const uint32_t MEM_LOB_EXTERN_RETRYINFO_LEN = sizeof(ObMemLobRetryInfo);
   static const uint16_t MEM_LOB_EXTERN_SIZE_LEN = sizeof(uint16_t);
   static const uint32_t MEM_LOB_ADDR_LEN = 0; // reserved for temp lob address
@@ -1013,7 +1014,7 @@ public:
   int set_payload_data(const ObString& payload);
   int set_payload_data(const ObLobCommon *lob_comm, const ObString& payload);
   int set_tx_info(const ObMemLobTxInfo &tx_info);
-  int set_location_info(const ObMemLobLocationInfo &location_info);
+  int set_access_info(const LobAccessInfo &access_info);
   int set_retry_info(const ObMemLobRetryInfo &retry_info);
 
   // interfaces for read
@@ -1027,7 +1028,7 @@ public:
   int get_inrow_data(ObString &inrow_data) const;
   int get_lob_data_byte_len(int64_t &len) const;
   int get_tx_info(ObMemLobTxInfo *&tx_info) const;
-  int get_location_info(ObMemLobLocationInfo *&location_info) const;
+  int get_access_info(LobAccessInfo *&access_info) const;
   int get_retry_info(ObMemLobRetryInfo *&retry_info) const;
   int get_read_snapshot_data(ObString &data) const;
   int get_real_locator_len(int64_t &real_len) const;
