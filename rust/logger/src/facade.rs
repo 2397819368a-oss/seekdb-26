@@ -87,7 +87,7 @@ fn emit(entry: &Record<'_>) {
     #[cfg(target_os = "macos")]
     let thread_id = {
         let mut id = 0;
-        unsafe { libc::pthread_threadid_np(libc::pthread_self(), &mut id) };
+        unsafe { libc::pthread_threadid_np(0, &mut id) };
         id as i64
     };
     #[cfg(windows)]

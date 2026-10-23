@@ -56,6 +56,7 @@ public:
   virtual int end_nested_session(
       ObSQLSessionInfo::StmtSavedValue &saved_session,
       SavedValue &saved_connection) = 0;
+  virtual int64_t get_transaction_id() const = 0;
 };
 
 inline ObIInnerSQLConnection *as_inner_sql_connection(

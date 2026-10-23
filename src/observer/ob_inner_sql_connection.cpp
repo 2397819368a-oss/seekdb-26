@@ -47,6 +47,12 @@ namespace observer
 
 constexpr const char ObInnerSQLConnection::LABEL[];
 
+int64_t ObInnerSQLConnection::get_transaction_id() const
+{
+  const transaction::ObTxDesc *tx_desc = get_session().get_tx_desc();
+  return OB_ISNULL(tx_desc) ? 0 : tx_desc->get_tx_id().get_id();
+}
+
 class ObInnerSQLConnection::ObSqlQueryExecutor : public sqlclient::ObIExecutor
 {
 public:

@@ -173,6 +173,7 @@ public:
   bool is_nested_conn();
   virtual void set_user_timeout(int64_t timeout) { user_timeout_ = timeout; }
   virtual int64_t get_user_timeout() const { return user_timeout_; }
+  virtual int64_t get_transaction_id() const override;
   int try_acquire_query_lock();
   void try_release_query_lock();
 
