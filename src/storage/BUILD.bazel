@@ -595,3 +595,15 @@ cc_library(
     tags = ["manual"],
     visibility = ["//unittest/storage/tx:__pkg__"],
 )
+
+cc_library(
+    name = "memory_printer_test_headers",
+    testonly = True,
+    hdrs = [
+        "tx_storage/ob_memory_printer.h",
+        "tx_storage/ob_memstore_freezer.h",
+    ],
+    deps = [":storage_runtime_interface"] + _STORAGE_INTERFACE_NATIVE_DEPS,
+    tags = ["manual"],
+    visibility = ["//unittest/storage:__pkg__"],
+)

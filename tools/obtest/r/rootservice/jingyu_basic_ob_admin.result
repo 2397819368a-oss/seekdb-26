@@ -8,7 +8,6 @@ ob1.mysql ALTER SYSTEM SET enable_rereplication = 'false';
 create mysql tenant
 =======================================================
 set @@session.ob_query_timeout = 200000000;
-alter system set __min_full_resource_pool_memory=1073741824;
 use oceanbase;
 ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3', 'z4');
 ob1.mysql CREATE TENANT mysql RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';

@@ -72,7 +72,7 @@ protected:
   static const int64_t WARN_INTERVAL = 60000000L; //60s
   static const uint64_t ALLOC_MAGIC_NUM = 0x72737263706f6f6c; // rsrcpool
   static const uint64_t ALLOC_BY_INNER_ALLOCATOR = 0x0;
-  static const uint64_t ALLOC_BY_OBMALLOC = 0x1;
+  static const uint64_t ALLOC_BY_OVERFLOW_ALLOCATOR = 0x1;
   static const int64_t CHECK_INTERVAL = 100000;
   static const int64_t UPDATE_INTERVAL = 5000000;
   struct Node
@@ -91,10 +91,12 @@ protected:
 public:
   ObBaseResourcePool(const int64_t max_free_list_num,
                      common::ObIAllocator *allocator,
-                     const lib::ObMemAttr &mem_attr)
+                     const lib::ObMemAttr &mem_attr,
+                     common::MemoryUsageTracker *memory_tracker = nullptr)
     : max_free_list_num_(max_free_list_num),
       mem_attr_(mem_attr),
       allocator_(allocator),
+      overflow_allocator_(lib::ObMallocAllocator::get_instance()),
       inner_allocated_num_(0),
       inner_used_num_(0),
       free_list_allocator_(ObMemAttr("PoolFreeList", mem_attr.ctx_id_),
@@ -108,6 +110,7 @@ public:
   {
     int ret = OB_SUCCESS;
     char *buf = NULL;
+    free_list_allocator_.set_memory_tracker(memory_tracker);
 
     if (OB_ISNULL(allocator_)) {
       ret = OB_ERR_UNEXPECTED;
@@ -145,6 +148,7 @@ protected:
       }
       allocator_ = NULL;
     }
+    set_overflow_allocator(nullptr);
   }
 public:
   T *alloc()
@@ -202,6 +206,20 @@ public:
     return free_list_.get_total();
   }
 protected:
+  void set_overflow_allocator(common::ObIAllocator *allocator)
+  {
+    // Configure before allocation, or after all overflow nodes are released:
+    // the allocator also determines their allocation layout and free policy.
+    overflow_allocator_ = nullptr != allocator
+        ? allocator : lib::ObMallocAllocator::get_instance();
+  }
+
+  void free_overflow_node_(Node *ptr)
+  {
+    ptr->~Node();
+    overflow_allocator_->free(ptr);
+  }
+
   Node *alloc_node_()
   {
     Node *ret = NULL;
@@ -219,8 +237,8 @@ protected:
           (void)ATOMIC_AAF(&inner_used_num_, 1);
         }
       } else {
-        flag = ALLOC_BY_OBMALLOC;
-        buffer = common::ob_malloc(sizeof(Node), mem_attr_);
+        flag = ALLOC_BY_OVERFLOW_ALLOCATOR;
+        buffer = overflow_allocator_->alloc(sizeof(Node), mem_attr_);
         (void)ATOMIC_AAF(&inner_allocated_num_, -1);
       }
       if (NULL != buffer) {
@@ -260,9 +278,8 @@ protected:
           allocator_->free(ptr);
         }
         (void)ATOMIC_AAF(&inner_used_num_, -1);
-      } else if (ALLOC_BY_OBMALLOC == ptr->flag) {
-        ptr->~Node();
-        common::ob_free(ptr);
+      } else if (ALLOC_BY_OVERFLOW_ALLOCATOR == ptr->flag) {
+        free_overflow_node_(ptr);
       } else {
         _COMMON_LOG_RET(ERROR, common::OB_INVALID_ARGUMENT, "invalid flag=%lu", ptr->flag);
       }
@@ -272,6 +289,7 @@ protected:
   const int64_t max_free_list_num_;
   const lib::ObMemAttr mem_attr_;
   common::ObIAllocator *allocator_;
+  common::ObIAllocator *overflow_allocator_;
   volatile int64_t inner_allocated_num_;
   volatile int64_t inner_used_num_;
   NodeQueue free_list_;

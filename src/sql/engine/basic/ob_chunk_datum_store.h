@@ -931,19 +931,19 @@ public:
   struct DisableDumpGuard
   {
     DisableDumpGuard(ObChunkDatumStore &store)
-        : store_(store), memory_limit_(store_.mem_limit_)
+        : store_(store)
     {
-      store_.mem_limit_ = 0;
+      ++store_.dump_suspend_depth_;
     }
 
     ~DisableDumpGuard()
     {
-      store_.mem_limit_ = memory_limit_;
+      OB_ASSERT(store_.dump_suspend_depth_ > 0);
+      --store_.dump_suspend_depth_;
     }
 
   private:
     ObChunkDatumStore &store_;
-    int64_t memory_limit_ = 0;
   };
 
 public:
@@ -963,7 +963,10 @@ public:
       uint32_t row_extra_size = 0,
       int64_t default_block_size = BLOCK_SIZE);
 
-  void set_allocator(common::ObIAllocator &alloc) { allocator_ = &alloc; }
+  void set_allocator(common::ObIAllocator &alloc)
+  {
+    allocator_ = &alloc;
+  }
 
   void reset();
 
@@ -1117,7 +1120,7 @@ private:
     }
   inline int dump_one_block(BlockBuffer *item);
 
-  int write_file(void *buf, int64_t size);
+  virtual int write_file(void *buf, int64_t size);
   int aio_read_file(void *buf,
                     const int64_t size,
                     const int64_t offset,
@@ -1142,6 +1145,7 @@ private:
   const char *label_;
   int64_t ctx_id_;
   int64_t mem_limit_;
+  int64_t dump_suspend_depth_;
 
   Block* cur_blk_;
   BlockBuffer* cur_blk_buffer_;

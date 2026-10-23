@@ -5,7 +5,6 @@ ob1.mysql alter system set debug_sync_timeout = '1000s';
 ob1.mysql alter system set enable_rereplication = false;
 ob1.mysql alter system set server_permanent_offline_time = '20s';
 set @@session.ob_query_timeout = 200000000;
-alter system set __min_full_resource_pool_memory=1073741824;
 use oceanbase;
 ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3');
 ob1.mysql CREATE TENANT tenant_for_permanent RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2, F@z3", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';

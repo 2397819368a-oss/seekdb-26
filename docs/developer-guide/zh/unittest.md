@@ -1,16 +1,15 @@
 # 编写与运行单元测试
 
-C++ 单元测试使用 Google Test，并通过 Bazel `cc_test` 显式声明。当前仓库有 `unittest/oblib/` 下的两个分配器测试。
+C++ 单元测试使用 Google Test，并通过 Bazel `cc_test` 显式声明。测试位于 `unittest/`；可通过下方查询命令查看当前已注册的目标。
 
 ## 在 Linux 上编译
 
 ```bash
 ./build.py init
-./build.py build //unittest/oblib:test_malloc_backend
-./build.py build --sanity //unittest/oblib:test_jemalloc_hook
+./build.py build //unittest/storage:storage_tests
 ```
 
-`build` 只编译和链接，不运行测试。jemalloc hook 测试需要 `--sanity`，以启用项目自带的 jemalloc 后端。测试二进制位于 `build/bin/` 下对应的 target 包目录。
+`build` 只编译和链接，不运行测试。测试二进制位于 `build/bin/` 下对应的 target 包目录。
 
 列出仓库中的测试目标：
 
@@ -21,8 +20,7 @@ C++ 单元测试使用 Google Test，并通过 Bazel `cc_test` 显式声明。�
 ## 运行测试
 
 ```bash
-./build.py test //unittest/oblib:test_malloc_backend --test_output=errors
-./build.py test --sanity //unittest/oblib:test_jemalloc_hook --test_output=errors
+./build.py test //unittest/storage:storage_tests --test_output=errors
 ```
 
 ## 添加测试

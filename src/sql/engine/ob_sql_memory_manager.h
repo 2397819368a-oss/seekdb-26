@@ -22,6 +22,7 @@
 #include "lib/lock/ob_mutex.h"
 #include "lib/allocator/ob_fifo_allocator.h"
 #include "sql/engine/basic/ob_chunk_row_store.h"
+#include "sql/engine/basic/ob_workarea_memory_limit.h"
 #include "sql/engine/ob_phy_operator_type.h"
 #include "sql/engine/ob_exec_context.h"
 #include "sql/dtl/ob_dtl_linked_buffer.h"
@@ -563,13 +564,12 @@ class ObSqlWorkareaCurrentMemoryInfo
 {
 public:
   ObSqlWorkareaCurrentMemoryInfo() :
-    enable_(false), max_workarea_size_(0), workarea_hold_size_(0), max_auto_workarea_size_(0),
+    enable_(false), max_workarea_size_(0), max_auto_workarea_size_(0),
     mem_target_(0), total_mem_used_(0), global_bound_size_(0), drift_size_(0),
     workarea_cnt_(0), manual_calc_cnt_(0)
   {}
 
   int64_t get_max_workarea_size() const { return max_workarea_size_; }
-  int64_t get_workarea_hold_size() const { return workarea_hold_size_; }
   int64_t get_max_auto_workarea_size() const { return max_auto_workarea_size_; }
   int64_t get_mem_target() const { return mem_target_; }
   int64_t get_total_mem_used() const { return total_mem_used_; }
@@ -581,7 +581,6 @@ public:
   bool is_valid() { return enable_; }
   bool enable_;
   int64_t max_workarea_size_;
-  int64_t workarea_hold_size_;
   int64_t max_auto_workarea_size_;
   int64_t mem_target_;
   int64_t total_mem_used_;
@@ -634,10 +633,11 @@ private:
 public:
   ObSqlMemoryManager() :
     wa_intervals_(nullptr), min_bound_size_(0),
-    enable_auto_memory_mgr_(false), mutex_(common::ObLatchIds::SQL_MEMORY_MGR_MUTEX_LOCK), profile_lists_(nullptr),
+    enable_auto_memory_mgr_(false), pre_enable_auto_memory_mgr_(false),
+    mutex_(common::ObLatchIds::SQL_MEMORY_MGR_MUTEX_LOCK), profile_lists_(nullptr),
     drift_size_(0), profile_cnt_(0), pre_profile_cnt_(0), global_bound_size_(0),
-    mem_target_(0), max_workarea_size_(0), workarea_hold_size_(0), max_auto_workarea_size_(0),
-    workarea_managed_tracker_(), active_profile_used_(0),
+    mem_target_(0), max_workarea_size_(0), max_auto_workarea_size_(0),
+    active_profile_used_(0),
     manual_calc_cnt_(0), wa_start_(0), wa_end_(0), wa_cnt_(0),
     lock_(), global_bound_update_lock_()
   {}
@@ -662,6 +662,11 @@ public:
     const int64_t wa_max_memory_size,
     const bool auto_calc);
   int calculate_global_bound_size(common::ObIAllocator *allocator = nullptr, bool auto_calc = true);
+  int calculate_global_bound_size(
+      const bool auto_memory_mgr,
+      const int64_t work_area_max_size,
+      common::ObIAllocator *allocator,
+      const bool auto_calc);
   OB_INLINE int64_t get_global_bound_size() { return ATOMIC_LOAD(&global_bound_size_); }
 
   OB_INLINE bool enable_auto_memory_mgr() { return enable_auto_memory_mgr_; }
@@ -673,19 +678,16 @@ public:
   int get_all_active_workarea(common::ObIArray<ObSqlWorkareaProfileInfo> &wa_actives);
   int get_workarea_memory_info(ObSqlWorkareaCurrentMemoryInfo &memory_info);
 
-  int64_t get_max_workarea_size() const { return max_workarea_size_; }
-  int64_t get_workarea_hold_size() const { return workarea_hold_size_; }
+  int64_t get_max_workarea_size() const { return ATOMIC_LOAD(&max_workarea_size_); }
   int64_t get_max_auto_workarea_size() const { return max_auto_workarea_size_; }
   int64_t get_mem_target() const { return mem_target_; }
   int64_t get_drift_size() const { return drift_size_; }
   int64_t get_workarea_count() const { return profile_cnt_; }
   int64_t get_manual_calc_count() const { return manual_calc_cnt_; }
-  int64_t get_total_mem_used() const { return workarea_managed_tracker_.used(); }
-  common::MemoryUsageTracker &get_workarea_managed_tracker()
-  { return workarea_managed_tracker_; }
-  int64_t get_workarea_managed_used() const { return workarea_managed_tracker_.used(); }
-  void adjust_active_profile_used(const int64_t delta)
-  { ATOMIC_FAA(&active_profile_used_, delta); }
+  // Approximate sum reported by registered profiles, not all WORK_AREA
+  // allocations or physical pages retained after an operator unregisters.
+  int64_t get_total_mem_used() const { return MAX(get_active_profile_used(), 0); }
+  void adjust_profile_used(ObSqlWorkAreaProfile &profile, const int64_t delta);
   int64_t get_active_profile_used() const { return ATOMIC_LOAD(&active_profile_used_); }
 private:
   OB_INLINE bool need_manual_calc_bound();
@@ -702,7 +704,11 @@ private:
   int try_push_profiles_work_area_size(int64_t global_bound_size);
   int calc_work_area_size_by_profile(int64_t global_bound_size, ObSqlWorkAreaProfile &profile);
   bool enable_auto_sql_memory_manager();
-  int get_max_work_area_size(int64_t &max_wa_memory_size, const bool auto_calc);
+  int get_work_area_budget(int64_t &work_area_max_size);
+  int get_max_work_area_size(
+      const int64_t work_area_max_size,
+      int64_t &max_wa_memory_size,
+      const bool auto_calc);
   int find_interval_index(const int64_t cache_size, int64_t &idx, int64_t &out_cache_size);
   int count_profile_into_work_area_intervals(
     ObSqlWorkAreaInterval *wa_intervals,
@@ -781,9 +787,7 @@ private:
   int64_t global_bound_size_;
   int64_t mem_target_;
   int64_t max_workarea_size_;
-  int64_t workarea_hold_size_;
   int64_t max_auto_workarea_size_;
-  common::MemoryUsageTracker workarea_managed_tracker_;
   int64_t active_profile_used_;
 
   // statistics

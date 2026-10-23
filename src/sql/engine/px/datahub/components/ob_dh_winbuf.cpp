@@ -21,6 +21,8 @@
 using namespace oceanbase::sql;
 using namespace oceanbase::common;
 
+// Datahub messages are deliberately materialized without spilling. Zero is
+// an explicit local unlimited setting, not an inherited WORK_AREA quota.
 #define UNLIMITED_MEM 0
 
 int ObWinbufPieceMsgListener::on_message(

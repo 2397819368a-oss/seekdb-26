@@ -473,7 +473,9 @@ int ObPxMSReceiveOp::GlobalOrderInput::create_chunk_datum_store(
     ret = OB_ALLOCATE_MEMORY_FAILED;
   } else {
     row_store = new (buf) ObChunkDatumStore("PxMSRecvGlobal");
-    // TODO: llongzhong.wlz Here should use a parameter to control the amount of data stored in row_store, or let SQL memory management control automatically
+    // The processor accounts for all channel stores. GlobalOrderInput::
+    // process_dump() spills them against the operator's shared budget; a
+    // separate per-store budget would multiply it by the channel count.
     int64_t mem_limit = 0;
     row_store->set_allocator(*alloc_);
     row_store->set_callback(sql_mem_processor_);
@@ -874,7 +876,7 @@ int ObPxMSReceiveOp::GlobalOrderInput::process_dump(ObPxMSReceiveOp &ms_receive_
       alloc_,
       [&](int64_t cur_cnt){ return processed_cnt_ > cur_cnt; },
       updated))) {
-  } else if (need_dump(*sql_mem_processor_, *alloc_, dumped)) {
+  } else if (OB_FAIL(need_dump(*sql_mem_processor_, *alloc_, dumped))) {
   } else if (dumped) {
     for (int64_t i = 0; OB_SUCC(ret) && i < ms_receive_op.merge_inputs_.count(); ++i) {
       if (OB_NOT_NULL(ms_receive_op.merge_inputs_.at(i)->add_row_store_)) {

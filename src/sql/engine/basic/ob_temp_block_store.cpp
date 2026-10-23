@@ -16,8 +16,8 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 
-#include "config_bridge.h"
 #include "ob_temp_block_store.h"
+#include "sql/engine/basic/ob_workarea_memory_limit.h"
 
 
 namespace oceanbase
@@ -71,7 +71,7 @@ int ObTempBlockStore::init(int64_t mem_limit,
   backup_enable_dump_ = enable_dump_;
   
   ctx_id_ = mem_ctx_id;
-  const int label_len = MIN(lib::AOBJECT_LABEL_SIZE, strlen(label));
+  const int label_len = MIN(lib::ObLabel::MAX_LENGTH, strlen(label));
   MEMCPY(label_, label, label_len);
   label_[label_len] = '\0';
   io_.fd_ = -1;
@@ -1081,10 +1081,8 @@ bool ObTempBlockStore::need_dump(const int64_t extra_size)
 {
   bool need_to_dump = false;
   if (!config::enable_sql_operator_dump() || !enable_dump_) { // no dump
-  } else if (mem_limit_ > 0) {
-    if (mem_hold_ + extra_size > mem_limit_) {
-      need_to_dump = true;
-    }
+  } else {
+    need_to_dump = should_spill_workarea(mem_limit_, mem_hold_, extra_size);
   }
   return need_to_dump;
 }
@@ -1405,7 +1403,7 @@ OB_DEF_SERIALIZE(ObTempBlockStore)
 OB_DEF_DESERIALIZE(ObTempBlockStore)
 {
   int ret = OB_SUCCESS;
-  char label[lib::AOBJECT_LABEL_SIZE + 1];
+  char label[lib::ObLabel::MAX_LENGTH + 1];
   LST_DO_CODE(OB_UNIS_DECODE,
               
               ctx_id_,

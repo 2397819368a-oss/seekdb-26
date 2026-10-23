@@ -195,21 +195,20 @@ private:
   void adjust_profile_total(const int64_t delta)
   {
     if (0 != delta) {
-      ATOMIC_FAA(&profile_.profile_total_used_, delta);
-      if (OB_NOT_NULL(sql_mem_mgr_) && profile_.is_registered()) {
-        sql_mem_mgr_->adjust_active_profile_used(delta);
+      if (OB_NOT_NULL(sql_mem_mgr_)) {
+        sql_mem_mgr_->adjust_profile_used(profile_, delta);
+      } else {
+        ATOMIC_FAA(&profile_.profile_total_used_, delta);
       }
     }
   }
   void release_memory_accounting()
   {
     const int64_t data_used = ATOMIC_TAS(&profile_.profile_data_used_, 0);
-    const int64_t total_used = ATOMIC_TAS(&profile_.profile_total_used_, 0);
+    const int64_t total_used = profile_.get_profile_total_used();
+    adjust_profile_total(-total_used);
     if (data_used > 0 && OB_NOT_NULL(mem_callback_)) {
       mem_callback_->free(data_used);
-    }
-    if (0 != total_used && OB_NOT_NULL(sql_mem_mgr_) && profile_.is_registered()) {
-      sql_mem_mgr_->adjust_active_profile_used(-total_used);
     }
     mem_callback_ = nullptr;
     sql_mem_mgr_ = nullptr;

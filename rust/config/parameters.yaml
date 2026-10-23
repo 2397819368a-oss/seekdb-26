@@ -498,14 +498,6 @@
   edit_level: DYNAMIC_EFFECTIVE
   description: "the row number processed by vectorized sql engine within one batch. Range: [0, 65535]"
 
-- name: _ctx_memory_limit
-  type: STR_WITH_CHECKER
-  default: ""
-  section: RUNTIME
-  edit_level: DYNAMIC_EFFECTIVE
-  description: "specifies server runtime context memory limits."
-  checker: "common::ObCtxMemoryLimitChecker"
-
 - name: _enable_convert_real_to_decimal
   type: BOOL
   default: "False"
@@ -765,7 +757,7 @@
   range: "[0, 50)"
   section: RUNTIME
   edit_level: DYNAMIC_EFFECTIVE
-  description: "maximum memory for storage metadata, as a percentage of total server runtime memory. Range: [0, 50), percentage, 0 means no limit to storage meta memory"
+  description: "storage metadata memory estimate for tablet capacity planning, as a percentage of total server runtime memory. Range: [0, 50). Does not enforce an allocation limit on metadata memory"
 
 - name: _max_tablet_cnt_per_gb
   type: INT

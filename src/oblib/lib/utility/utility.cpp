@@ -17,6 +17,7 @@
 #define USING_LOG_PREFIX LIB
 
 #include "utility.h"
+#include "lib/alloc/alloc_func.h"
 #include "lib/utility/ob_printf.h"
 #include "dirent.h"
 #if defined(__APPLE__)

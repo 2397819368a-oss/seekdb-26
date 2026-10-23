@@ -166,6 +166,10 @@ struct HazardDomain final {
 public:
   int init(int64_t mb_handle_num);
   void reset_retire_list();
+  int64_t get_retired_memory_size() const
+  {
+    return ATOMIC_LOAD_RLX(&retired_memory_size_);
+  }
   int acquire_hazptrs(HazptrList& list, int64_t num);
   void release_hazptrs(HazptrList& list);
   void choose_and_release_hazptrs(HazptrList& list, int64_t num_to_release);

@@ -19,8 +19,8 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 
-#include "config_bridge.h"
 #include "sql/engine/basic/ob_chunk_row_store.h"
+#include "sql/engine/basic/ob_workarea_memory_limit.h"
 
 
 namespace oceanbase
@@ -541,7 +541,8 @@ bool ObChunkRowStore::find_block_can_hold(const int64_t size, bool &need_shrink)
     use_block(next);
     blocks_.add_last(next);
     n_blocks_++;
-  } else if (mem_limit_ > 0 && mem_hold_ > mem_used_ && mem_hold_ + size > mem_limit_) {
+  } else if (mem_hold_ > mem_used_
+      && should_spill_workarea(mem_limit_, mem_hold_, size)) {
     need_shrink = true;
   }
   return found;
@@ -1430,10 +1431,8 @@ bool ObChunkRowStore::need_dump(int64_t extra_size)
   bool dump = false;
   if (!config::enable_sql_operator_dump()) {
     // no dump
-  } else if (mem_limit_ > 0) {
-    if (mem_used_ + extra_size > mem_limit_) {
-      dump = true;
-    }
+  } else {
+    dump = should_spill_workarea(mem_limit_, mem_used_, extra_size);
   }
   return dump;
 }

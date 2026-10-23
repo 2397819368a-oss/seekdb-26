@@ -1,16 +1,15 @@
 # Write and run unit tests
 
-C++ unit tests use Google Test and explicit Bazel `cc_test` targets. The current checkout contains two allocator tests under `unittest/oblib/`.
+C++ unit tests use Google Test and explicit Bazel `cc_test` targets. Tests live under `unittest/`; use the target query below to discover the currently registered tests.
 
 ## Build tests on Linux
 
 ```bash
 ./build.py init
-./build.py build //unittest/oblib:test_malloc_backend
-./build.py build --sanity //unittest/oblib:test_jemalloc_hook
+./build.py build //unittest/storage:storage_tests
 ```
 
-`build` compiles and links the tests without running them. The jemalloc hook test requires `--sanity`, which enables the bundled jemalloc backend. Test binaries appear under `build/bin/` in their target's package directory.
+`build` compiles and links the tests without running them. Test binaries appear under `build/bin/` in their target's package directory.
 
 List the checked-in test targets with:
 
@@ -21,8 +20,7 @@ List the checked-in test targets with:
 ## Run a test
 
 ```bash
-./build.py test //unittest/oblib:test_malloc_backend --test_output=errors
-./build.py test --sanity //unittest/oblib:test_jemalloc_hook --test_output=errors
+./build.py test //unittest/storage:storage_tests --test_output=errors
 ```
 
 ## Add a test

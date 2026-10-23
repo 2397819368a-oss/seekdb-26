@@ -415,7 +415,6 @@ STAT_EVENT_SET_DEF(MEMORY_BUDGET, "effective observer memory budget", ObStatClas
 STAT_EVENT_SET_DEF(SYSTEM_MEMORY, "effective system memory", ObStatClassIds::RESOURCE, 140015, false, true, true)
 STAT_EVENT_SET_DEF(MAX_SESSION_NUM, "max session num", ObStatClassIds::RESOURCE, 140017, false, true, true)
 STAT_EVENT_SET_DEF(KV_CACHE_HOLD, "kvcache hold", ObStatClassIds::RESOURCE, 140018, false, true, true)
-STAT_EVENT_SET_DEF(UNMANAGED_MEMORY_SIZE, "unmanaged memory size", ObStatClassIds::RESOURCE, 140019, false, true, true) // FARM COMPAT WHITELIST
 //CLOG
 
 // DEBUG

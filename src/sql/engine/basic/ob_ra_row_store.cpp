@@ -16,9 +16,9 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 
-#include "config_bridge.h"
 #include "ob_ra_row_store.h"
 #include "data_plane/tmp_file/ob_tmp_file.h"
+#include "sql/engine/basic/ob_workarea_memory_limit.h"
 
 
 namespace oceanbase
@@ -918,33 +918,12 @@ bool ObRARowStore::need_dump()
   int ret = OB_SUCCESS;
   if (is_file_open()) {
     dump = true;
-  } else if (mem_limit_ > 0) {
-    if (mem_hold_ > mem_limit_) {
-      dump = true;
-    }
   } else if (!config::enable_sql_operator_dump()) {
     // no dump
   } else {
-    const int64_t mem_ctx_pct_trigger = 80;
-    lib::ObMallocAllocator *instance = lib::ObMallocAllocator::get_instance();
-    lib::ObCtxAllocatorGuard allocator = NULL;
-    if (NULL == instance) {
-      ret = common::OB_ERR_SYS;
-      LOG_ERROR("NULL allocator", K(ret));
-    } else if (OB_ISNULL(allocator = instance->get_ctx_allocator(
-        ctx_id_))) {
-      // no context allocator, do nothing
-    } else {
-      const int64_t limit = allocator->get_limit();
-      const int64_t hold = allocator->get_hold();
-      int64_t mod_hold = 0;
-      if (limit / 100 * mem_ctx_pct_trigger <= hold) {
-        dump = true;
-      }
-      if (dump) {
-      }
-    }
+    dump = should_spill_workarea(mem_limit_, mem_hold_, 0);
   }
+  UNUSED(ret);
   return dump;
 }
 

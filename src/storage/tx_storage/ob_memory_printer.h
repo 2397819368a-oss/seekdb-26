@@ -25,7 +25,7 @@ namespace oceanbase
 namespace storage
 {
 
-// Periodically prints process memory and memstore usage.
+// Periodically prints memstore usage.
 class ObPrintMemoryUsage : public ObTimerTask
 {
 public:
@@ -43,7 +43,7 @@ public:
   static ObMemoryPrinter &get_instance();
   // Register the memory printer with a timer thread.
   int register_timer_task(common::ObTimer &timer);
-  // Print process memory and memstore usage.
+  // Print memstore usage.
   int print_memory_usage();
 private:
   ObMemoryPrinter() : print_mutex_(common::ObLatchIds::MEMORY_USAGE_LOCK) {}

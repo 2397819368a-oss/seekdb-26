@@ -1302,7 +1302,7 @@ OB_INLINE bool is_shadow_column(const uint64_t column_id)
   return column_id > common::OB_MIN_SHADOW_COLUMN_ID;
 }
 
-// ob_malloc & ob_tc_malloc
+// ob_malloc
 const int64_t OB_MALLOC_NORMAL_BLOCK_SIZE = (1LL << 13) - 256;                 // 8KB
 const int64_t OB_MALLOC_MIDDLE_BLOCK_SIZE = (1LL << 16) - 256;                 // 64KB
 const int64_t OB_MALLOC_BIG_BLOCK_SIZE = (1LL << 21) - ACHUNK_PRESERVE_SIZE;// 2MB (-17KB)

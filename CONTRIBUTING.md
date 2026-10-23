@@ -38,8 +38,7 @@ The seekdb binary is generated at `build/bin/src/observer/seekdb`.
 Build the existing C++ tests on Linux without running them:
 
 ```bash
-./build.py build //unittest/oblib:test_malloc_backend
-./build.py build --sanity //unittest/oblib:test_jemalloc_hook
+./build.py build //unittest/storage:storage_tests
 ```
 
 See [Writing and running unit tests](docs/developer-guide/en/unittest.md) for target discovery and Google Test filtering.

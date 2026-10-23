@@ -14,27 +14,24 @@
  * limitations under the License.
  */
 
-#ifndef OCEANBASE_STORAGE_META_MEMORY_LIMIT_H_
-#define OCEANBASE_STORAGE_META_MEMORY_LIMIT_H_
+#ifndef OCEANBASE_SQL_ENGINE_BASIC_OB_WORKAREA_MEMORY_LIMIT_H_
+#define OCEANBASE_SQL_ENGINE_BASIC_OB_WORKAREA_MEMORY_LIMIT_H_
 
-#include "lib/alloc/alloc_func.h"
-#include "lib/utility/ob_mod_define.h"
+#include <cstdint>
 
 namespace oceanbase
 {
-namespace storage
+namespace sql
 {
 
-inline int set_meta_obj_memory_limit(const int64_t percentage)
-{
-  const int64_t memory_budget = lib::get_memory_budget();
-  const int64_t memory_limit = 0 == percentage
-      ? memory_budget
-      : memory_budget / 100 * percentage;
-  return lib::set_ctx_limit(common::ObCtxIds::META_OBJ_CTX_ID, memory_limit);
-}
+// A positive per-store budget triggers spilling based on local usage. Zero
+// explicitly means unlimited; it does not inherit a process-wide hard quota.
+// Compare without overflowing local_bytes + incoming_bytes.
+bool should_spill_workarea(int64_t configured_limit,
+                           int64_t local_bytes,
+                           int64_t incoming_bytes);
 
-} // namespace storage
+} // namespace sql
 } // namespace oceanbase
 
-#endif // OCEANBASE_STORAGE_META_MEMORY_LIMIT_H_
+#endif // OCEANBASE_SQL_ENGINE_BASIC_OB_WORKAREA_MEMORY_LIMIT_H_

@@ -29,6 +29,19 @@ class ObResourceInfo;
 
 namespace observer
 {
+// Resource-table observation, not an allocation-admission quota snapshot.
+// For SQL WorkArea, usage is reported by profiles and the limit is a budget;
+// there is no reservation counter or physical-allocation hard cap.
+// Meta Object reports backing usage only, without a limit or reservations.
+struct MemoryResourceSample
+{
+  int64_t used_bytes_ = 0;
+  int64_t reserved_bytes_ = 0;
+  int64_t limit_bytes_ = 0;
+  bool is_scheduling_budget_ = false;
+  bool is_usage_only_ = false;
+};
+
 class ObResourceLimitTable : public common::ObVirtualTableScannerIterator
 {
 public:
@@ -37,6 +50,12 @@ public:
 public:
   virtual int inner_get_next_row(common::ObNewRow *&row);
   virtual void reset();
+  // Observation-only resources: do not register these with the calculator,
+  // which also converts tablet counts into physical resource requirements.
+  static int64_t memory_resource_count() { return 4; }
+  static const char *memory_resource_name(int64_t index);
+  static int get_memory_resource_sample(int64_t index,
+      MemoryResourceSample &sample);
   enum COLUMN_NAME
   {
         RESOURCE_NAME = common::OB_APP_MIN_COLUMN_ID,
@@ -50,6 +69,8 @@ private:
   int get_next_resource_info_(share::ObResourceInfo &info);
 private:
   share::ObLogicResourceStatIterator iter_;
+  bool logical_resources_finished_;
+  int64_t memory_resource_index_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObResourceLimitTable);
 };

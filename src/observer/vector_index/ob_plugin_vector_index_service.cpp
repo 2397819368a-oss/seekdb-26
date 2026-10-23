@@ -822,6 +822,9 @@ int ObPluginVectorIndexService::init(schema::ObMultiVersionSchemaService *schema
                                      common::ObILobReadService *lob_read_service)
 {
   int ret = OB_SUCCESS;
+  // TODO: Leave these vector-index management pages out of the shared Vector
+  // quota for now. Keep only the FIFO's local used/total statistics; the FIFO
+  // no longer resolves component quotas from context IDs.
   lib::ObMemAttr mem_attr("VecIdxSrv");
   if (IS_INIT) {
     ret = OB_INIT_TWICE;

@@ -49,6 +49,12 @@ public:
       return tiny_allocator_.total() + (nullptr == mstx_mem_ctx_ ? 0 : mstx_mem_ctx_->hold()); }
   OB_INLINE int64_t used() const {
       return tiny_allocator_.used() + (nullptr == mstx_mem_ctx_ ? 0 : mstx_mem_ctx_->used()); }
+  int64_t get_memory_used() const
+  {
+    // Only the context's freeable allocator backs per-tablet arenas. Avoid
+    // traversing mutable FIFO page lists from the SQL observation thread.
+    return memory_tracker_.used() + (nullptr == mstx_mem_ctx_ ? 0 : mstx_mem_ctx_->malloc_hold());
+  }
   OB_INLINE int64_t get_used_obj_cnt() const { return ATOMIC_LOAD(&created_tablets_cnt_); }
   TO_STRING_KV(K(tiny_allocator_.used()), K(tiny_allocator_.total()),
                "full allocator used", used(), "full allocator total", total());
@@ -56,6 +62,8 @@ private:
   common::ObIAllocator &get_allocator() { return mstx_mem_ctx_->get_malloc_allocator(); }
 private:
   bool is_inited_;
+  common::MemoryUsageTracker memory_tracker_;
+  common::TrackedAllocator page_allocator_;
   common::ObFIFOAllocator tiny_allocator_;
   int64_t wait_create_tablets_cnt_; // tablets waiting to be created
   int64_t created_tablets_cnt_; // tablets has been created

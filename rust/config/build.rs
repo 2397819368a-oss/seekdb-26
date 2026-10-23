@@ -20,6 +20,8 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 struct Parameter {
     name: String,
+    #[serde(default)]
+    accessor: String,
     #[serde(rename = "type")]
     kind: String,
     #[serde(rename = "default")]
@@ -31,6 +33,16 @@ struct Parameter {
     description: String,
     #[serde(default)]
     checker: String,
+}
+
+impl Parameter {
+    fn accessor(&self) -> &str {
+        if self.accessor.is_empty() {
+            &self.name
+        } else {
+            &self.accessor
+        }
+    }
 }
 
 fn rust_type(kind: &str) -> Option<&'static str> {
@@ -125,12 +137,26 @@ fn parameters(source: &str) -> Vec<Parameter> {
         }
     }
     let mut names = HashSet::new();
+    let mut accessors = HashSet::new();
     for parameter in &parameters {
         rust_type(&parameter.kind);
         assert!(
             names.insert(parameter.name.clone()),
             "duplicate parameter: {}",
             parameter.name
+        );
+        let accessor = parameter.accessor();
+        assert!(
+            accessor.starts_with(|ch: char| ch.is_ascii_lowercase() || ch == '_')
+                && accessor
+                    .chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+                && !accessor.contains("__"),
+            "invalid C++ accessor: {accessor}"
+        );
+        assert!(
+            accessors.insert(accessor.to_owned()),
+            "duplicate C++ accessor: {accessor}"
         );
     }
     parameters
@@ -197,19 +223,18 @@ fn generate_bridge(parameters: &[Parameter], internal_state: &[Parameter]) -> St
                  fn update_checked_status(store: &Store, name: &CxxString, value: &CxxString, reset: bool, callback: &CheckCallback) -> Status;\n",
     );
     for parameter in parameters {
+        let accessor = parameter.accessor();
         if let Some(ty) = rust_type(&parameter.kind) {
-            code.push_str(&format!("        fn {}() -> {ty};\n", parameter.name));
+            code.push_str(&format!("        fn {accessor}() -> {ty};\n"));
         }
         if parameter.kind == "MOMENT" {
-            code.push_str(&format!(
-                "        fn {}_parts() -> MomentTime;\n",
-                parameter.name
-            ));
+            code.push_str(&format!("        fn {}_parts() -> MomentTime;\n", accessor));
         }
     }
     code.push_str("    }\n}\n");
     for parameter in parameters {
-        let storage = parameter.name.to_ascii_uppercase();
+        let accessor = parameter.accessor();
+        let storage = accessor.to_ascii_uppercase();
         match parameter.kind.as_str() {
             "INT" | "INT_WITH_CHECKER" | "CAP" | "CAP_WITH_CHECKER" | "TIME"
             | "TIME_WITH_CHECKER" => {
@@ -217,7 +242,7 @@ fn generate_bridge(parameters: &[Parameter], internal_state: &[Parameter]) -> St
                     "static {storage}: AtomicI64 = AtomicI64::new({});\n\
                      pub fn {}() -> i64 {{ {storage}.load(Ordering::Acquire) }}\n",
                     numeric_default(parameter),
-                    parameter.name,
+                    accessor,
                 ));
             }
             "BOOL" => {
@@ -229,7 +254,7 @@ fn generate_bridge(parameters: &[Parameter], internal_state: &[Parameter]) -> St
                 code.push_str(&format!(
                     "static {storage}: AtomicBool = AtomicBool::new({default});\n\
                      pub fn {}() -> bool {{ {storage}.load(Ordering::Acquire) }}\n",
-                    parameter.name,
+                    accessor,
                 ));
             }
             "DBL" => {
@@ -241,7 +266,7 @@ fn generate_bridge(parameters: &[Parameter], internal_state: &[Parameter]) -> St
                 code.push_str(&format!(
                     "static {storage}: AtomicU64 = AtomicU64::new({bits});\n\
                      pub fn {}() -> f64 {{ f64::from_bits({storage}.load(Ordering::Acquire)) }}\n",
-                    parameter.name,
+                    accessor,
                 ));
             }
             "STR" | "STR_WITH_CHECKER" | "LOG_LEVEL" | "WORK_AREA_POLICY" | "MOMENT" | "MODE" => {
@@ -249,8 +274,8 @@ fn generate_bridge(parameters: &[Parameter], internal_state: &[Parameter]) -> St
                     "static {storage}: OnceLock<RwLock<String>> = OnceLock::new();\n\
                      fn {}_cell() -> &'static RwLock<String> {{ {storage}.get_or_init(|| RwLock::new({:?}.to_owned())) }}\n\
                      pub fn {}() -> String {{ {}_cell().read().expect(\"config string lock poisoned\").clone() }}\n",
-                    parameter.name, parameter.default_text, parameter.name,
-                    parameter.name,
+                    accessor, parameter.default_text, accessor,
+                    accessor,
                 ));
             }
             _ => unreachable!(),
@@ -258,7 +283,7 @@ fn generate_bridge(parameters: &[Parameter], internal_state: &[Parameter]) -> St
         if parameter.kind == "MOMENT" {
             code.push_str(&format!(
                 "pub fn {}_parts() -> bridge::MomentTime {{ parse_moment_parts(&{}()) }}\n",
-                parameter.name, parameter.name
+                accessor, accessor
             ));
         }
     }
@@ -294,6 +319,7 @@ fn generate_bridge(parameters: &[Parameter], internal_state: &[Parameter]) -> St
     code.push_str("];\n");
     code.push_str("pub(crate) fn apply(name: &str, value: &str) -> Result<(), crate::Error> {\n    validate_storable(name, value)?;\n    match name.to_ascii_lowercase().as_str() {\n");
     for parameter in parameters {
+        let accessor = parameter.accessor();
         let parser = match parameter.kind.as_str() {
             "INT" | "INT_WITH_CHECKER" => "parse_int",
             "CAP" | "CAP_WITH_CHECKER" => "parse_capacity",
@@ -307,19 +333,19 @@ fn generate_bridge(parameters: &[Parameter], internal_state: &[Parameter]) -> St
             "STR" | "STR_WITH_CHECKER" | "LOG_LEVEL" | "WORK_AREA_POLICY"
             | "MOMENT" | "MODE" => format!(
                 "*{}_cell().write().expect(\"config string lock poisoned\") = value.to_owned();",
-                parameter.name
+                accessor
             ),
             "DBL" => format!(
                 "let parsed = {parser}(name, value)?; {}.store(parsed.to_bits(), Ordering::Release);",
-                parameter.name.to_ascii_uppercase()
+                accessor.to_ascii_uppercase()
             ),
             "BOOL" => format!(
                 "{}.store({parser}(name, value)?, Ordering::Release);",
-                parameter.name.to_ascii_uppercase(),
+                accessor.to_ascii_uppercase(),
             ),
             _ => format!(
                 "let parsed = {parser}(name, value)?; {}.store(parsed, Ordering::Release);",
-                parameter.name.to_ascii_uppercase()
+                accessor.to_ascii_uppercase()
             ),
         };
         code.push_str(&format!(

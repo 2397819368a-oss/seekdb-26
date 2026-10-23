@@ -16,10 +16,10 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 
-#include "config_bridge.h"
 #include "query/engine/basic/ob_spill_row_store.h"
 #include "ob_chunk_datum_store.h"
 #include "sql/engine/ob_exec_context.h"
+#include "sql/engine/basic/ob_workarea_memory_limit.h"
 // for ObChunkStoreUtil
 
 namespace oceanbase
@@ -457,13 +457,15 @@ int ObChunkDatumStore::Block::swizzling(int64_t *col_cnt)
 
 ObChunkDatumStore::ObChunkDatumStore(const lib::ObLabel &label, common::ObIAllocator *alloc /* = NULL */)
   : inited_(false), label_(label),
-    ctx_id_(0), mem_limit_(0), cur_blk_(NULL), cur_blk_buffer_(nullptr),
+    ctx_id_(0), mem_limit_(0), dump_suspend_depth_(0),
+    cur_blk_(NULL), cur_blk_buffer_(nullptr),
     max_blk_size_(0), min_blk_size_(INT64_MAX),
     default_block_size_(BLOCK_SIZE),
     n_blocks_(0), row_cnt_(0), col_count_(-1),
     enable_dump_(true), has_dumped_(false), dumped_row_cnt_(0),
     io_event_observer_(nullptr), file_size_(0), n_block_in_file_(0),
     mem_hold_(0), mem_used_(0), max_hold_mem_(0),
+    inner_allocator_(lib::ObMemAttr(label)),
     allocator_(NULL == alloc ? &inner_allocator_ : alloc),
     row_extend_size_(0), callback_(nullptr), batch_ctx_(NULL),
     tmp_dump_blk_(nullptr)
@@ -484,6 +486,10 @@ int ObChunkDatumStore::init(int64_t mem_limit,
   enable_dump_ = enable_dump;
   
   ctx_id_ = mem_ctx_id;
+  if (allocator_ == &inner_allocator_) {
+    const ObMemAttr attr(label_, ctx_id_);
+    inner_allocator_.set_attr(attr);
+  }
   UNUSED(label_);
   if (0 == config::_chunk_row_store_mem_limit()) {
     mem_limit_ = mem_limit;
@@ -809,7 +815,8 @@ bool ObChunkDatumStore::find_block_can_hold(const int64_t size, bool &need_shrin
     use_block(next);
     blocks_.add_last(next);
     n_blocks_++;
-  } else if (mem_limit_ > 0 && mem_hold_ > mem_used_ && mem_hold_ + size > mem_limit_) {
+  } else if (mem_hold_ > mem_used_
+      && should_spill_workarea(mem_limit_, mem_hold_, size)) {
     need_shrink = true;
   }
   return found;
@@ -822,7 +829,10 @@ int ObChunkDatumStore::switch_block(const int64_t min_size)
     ret = OB_NOT_INIT;
   } else if (min_size <= 0 || OB_ISNULL(cur_blk_)) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (need_dump(min_size) && OB_FAIL(dump(true, false, default_block_size_))) {
+  } else if (need_dump(min_size)
+      && OB_FAIL(dump(true,
+                      0 == mem_limit_ && 1 == blocks_.get_size(),
+                      default_block_size_))) {
     if (OB_EXCEED_MEM_LIMIT != ret) {
     }
   } else {
@@ -1838,12 +1848,10 @@ int ObChunkDatumStore::aio_read_file(
 bool ObChunkDatumStore::need_dump(int64_t extra_size)
 {
   bool dump = false;
-  if (!config::enable_sql_operator_dump()) {
+  if (dump_suspend_depth_ > 0 || !config::enable_sql_operator_dump()) {
     // no dump
-  } else if (mem_limit_ > 0) {
-    if (mem_used_ + extra_size > mem_limit_) {
-      dump = true;
-    }
+  } else {
+    dump = should_spill_workarea(mem_limit_, mem_used_, extra_size);
   }
   return dump;
 }

@@ -52,7 +52,6 @@ int ObMemoryPrinter::register_timer_task(common::ObTimer &timer)
 int ObMemoryPrinter::print_memory_usage()
 {
   int ret = OB_SUCCESS;
-  int tmp_ret = OB_SUCCESS;
   static const int64_t BUF_LEN = 4LL << 10;
   char print_buf[BUF_LEN] = "";
   int64_t pos = 0;
@@ -62,14 +61,7 @@ int ObMemoryPrinter::print_memory_usage()
   } else if (OB_FAIL(print_mutex_.trylock())) {
     ret = OB_SUCCESS;
   } else {
-    if (OB_FAIL(databuff_printf(print_buf, BUF_LEN, pos,
-                                "=== MEMORY INFO ===\n"
-                                "unmanaged_memory_size=% '15ld\n",
-                                lib::get_unmanaged_memory_size()))) {
-    } else if (OB_SUCCESS != (tmp_ret = print_memory_usage_(print_buf,
-                                                            BUF_LEN,
-                                                            pos))) {
-    }
+    ret = print_memory_usage_(print_buf, BUF_LEN, pos);
 
     if (OB_SIZE_OVERFLOW == ret) {
       // If the buffer is not enough, truncate directly
@@ -91,7 +83,7 @@ int ObMemoryPrinter::print_memory_usage_(
     int64_t buf_len,
     int64_t &pos)
 {
-  int ret = OB_SUCCESS;
+  int ret = OB_NOT_INIT;
   SERVER_MODULE_SCOPE {
     storage::ObMemstoreFreezer *freezer = ::oceanbase::share::server_service<::oceanbase::storage::ObMemstoreFreezer>();
     if (OB_ISNULL(freezer)) {

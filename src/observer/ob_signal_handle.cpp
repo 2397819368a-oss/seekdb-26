@@ -38,8 +38,15 @@ static int sigtimedwait(const sigset_t *set, siginfo_t *info, const struct times
 #endif
 
 #include "ob_signal_handle.h"
+#include <cstdio>
+#if defined(_WIN32)
+#include <psapi.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#endif
+#include "lib/allocator/ob_jemalloc.h"
+#include "lib/utility/ob_platform_utils.h"
 #include "observer/ob_server.h"
-#include "observer/ob_dump_task_generator.h"
 #include "sql/ob_sql_init.h"
 #include "storage/tx_storage/ob_memory_printer.h"
 
@@ -52,6 +59,133 @@ using namespace storage;
 
 namespace observer
 {
+
+namespace
+{
+
+struct AllocatorProcessStats
+{
+  AllocatorProcessStats()
+    : allocator_stats_available_(false), allocated_(0), active_(0),
+      resident_(0), mapped_(0), virtual_memory_(0), process_resident_(0)
+  {}
+
+  bool allocator_stats_available_;
+  uint64_t allocated_;
+  uint64_t active_;
+  uint64_t resident_;
+  uint64_t mapped_;
+  int64_t virtual_memory_;
+  int64_t process_resident_;
+};
+
+int64_t get_virtual_memory_used(int64_t *resident_size)
+{
+#ifdef _WIN32
+  PROCESS_MEMORY_COUNTERS counters;
+  if (GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters))) {
+    if (nullptr != resident_size) {
+      *resident_size = static_cast<int64_t>(counters.WorkingSetSize);
+    }
+    return static_cast<int64_t>(counters.PagefileUsage);
+  }
+  if (nullptr != resident_size) {
+    *resident_size = 0;
+  }
+  return 0;
+#elif defined(__APPLE__)
+  mach_task_basic_info_data_t task_info_value = {};
+  mach_msg_type_number_t task_info_count = MACH_TASK_BASIC_INFO_COUNT;
+  if (KERN_SUCCESS == task_info(
+          mach_task_self(), MACH_TASK_BASIC_INFO,
+          reinterpret_cast<task_info_t>(&task_info_value),
+          &task_info_count)) {
+    if (nullptr != resident_size) {
+      *resident_size = static_cast<int64_t>(task_info_value.resident_size);
+    }
+    return static_cast<int64_t>(task_info_value.virtual_size);
+  }
+  if (nullptr != resident_size) {
+    *resident_size = 0;
+  }
+  return 0;
+#else
+  static const ssize_t page_size = lib::ob_get_page_size();
+  int64_t page_count = 0;
+  int64_t resident_page_count = 0;
+  FILE *statm = fopen("/proc/self/statm", "r");
+  if (nullptr != statm) {
+    static_cast<void>(fscanf(statm, "%ld %ld", &page_count,
+                             &resident_page_count));
+    fclose(statm);
+  }
+  if (nullptr != resident_size) {
+    *resident_size = resident_page_count * page_size;
+  }
+  return page_count * page_size;
+#endif
+}
+
+bool get_allocator_process_stats(AllocatorProcessStats &stats)
+{
+  stats = AllocatorProcessStats();
+  stats.virtual_memory_ = get_virtual_memory_used(&stats.process_resident_);
+#if defined(OB_HAVE_BUNDLED_JEMALLOC)
+  uint64_t epoch = 1;
+  size_t epoch_size = sizeof(epoch);
+  size_t value_size = sizeof(size_t);
+  size_t allocated = 0;
+  size_t active = 0;
+  size_t resident = 0;
+  size_t mapped = 0;
+  if (0 == je_mallctl("epoch", &epoch, &epoch_size, &epoch, sizeof(epoch))
+      && 0 == je_mallctl("stats.allocated", &allocated, &value_size, nullptr, 0)
+      && (value_size = sizeof(size_t),
+          0 == je_mallctl("stats.active", &active, &value_size, nullptr, 0))
+      && (value_size = sizeof(size_t),
+          0 == je_mallctl("stats.resident", &resident, &value_size, nullptr, 0))
+      && (value_size = sizeof(size_t),
+          0 == je_mallctl("stats.mapped", &mapped, &value_size, nullptr, 0))) {
+    stats.allocator_stats_available_ = true;
+    stats.allocated_ = static_cast<uint64_t>(allocated);
+    stats.active_ = static_cast<uint64_t>(active);
+    stats.resident_ = static_cast<uint64_t>(resident);
+    stats.mapped_ = static_cast<uint64_t>(mapped);
+  }
+#endif
+  return stats.allocator_stats_available_;
+}
+
+void ob_print_mod_memory_usage(bool print_to_std = false,
+                               bool print_glibc_malloc_stats = false)
+{
+  UNUSED(print_glibc_malloc_stats);
+  AllocatorProcessStats stats;
+  const bool available = get_allocator_process_stats(stats);
+  const uint64_t allocated = stats.allocated_;
+  const uint64_t active = stats.active_;
+  const uint64_t allocator_resident = stats.resident_;
+  const uint64_t mapped = stats.mapped_;
+  const int64_t virtual_memory = stats.virtual_memory_;
+  const int64_t process_resident = stats.process_resident_;
+  LIB_LOG(INFO, "allocator process memory", K(available), K(allocated),
+          K(active), K(allocator_resident), K(mapped), K(virtual_memory),
+          K(process_resident));
+  if (print_to_std) {
+    fprintf(stderr,
+            "allocator_process_memory available=%d allocated=%llu active=%llu "
+            "allocator_resident=%llu mapped=%llu virtual_memory=%lld "
+            "process_resident=%lld\n",
+            available ? 1 : 0, static_cast<unsigned long long>(allocated),
+            static_cast<unsigned long long>(active),
+            static_cast<unsigned long long>(allocator_resident),
+            static_cast<unsigned long long>(mapped),
+            static_cast<long long>(virtual_memory),
+            static_cast<long long>(process_resident));
+  }
+}
+
+} // namespace
 
 void ObSignalHandle::run1()
 {
@@ -104,7 +238,7 @@ int ObSignalHandle::add_signums_to_set(sigset_t &sig_set)
     int rc = 0;
     int signals[] = {SIGPIPE, SIGTERM, SIGUSR1,
                      40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
-                     50, 51, 52, 53, 55, 56, 57, 59, 60, 62,
+                     50, 51, 52, 53, 55, 56, 57, 59, 60,
                      63, 64};
     for (int64_t i = 0; OB_SUCC(ret) && i < ARRAYSIZEOF(signals); ++i) {
       if (0 != (rc = sigaddset(&sig_set, signals[i]))) {
@@ -196,11 +330,6 @@ int ObSignalHandle::deal_signals(int signum)
       break;
     }
     case 60: {
-      break;
-    }
-    case 62: {
-      //RESP_DUMP_TRACE_TO_FILE();
-      ObDumpTaskGenerator::generate_task_from_file();
       break;
     }
     case 63: {

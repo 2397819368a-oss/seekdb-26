@@ -133,7 +133,9 @@ int ObSqlWorkareaMemoryInfo::fill_row(
         break;
       }
       case WORKAREA_HOLD_SIZE: {
-        cells[cell_idx].set_int(memory_info.get_workarea_hold_size());
+        // Physical WORK_AREA allocation tracking has been retired. Profile
+        // reports are exposed separately as TOTAL_MEM_USED, not page holds.
+        cells[cell_idx].set_null();
         break;
       }
       case MAX_AUTO_WORKAREA_SIZE: {
