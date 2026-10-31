@@ -193,8 +193,19 @@ int expand_glob(const ObString &pattern, ObIAllocator &allocator, ObIArray<ObStr
     }
   }
 #else
-  DIR *dir_handle = ::opendir(search_dir.ptr());
-  if (dir_handle == nullptr) {
+  // ObString 不保证以 '\0' 结尾，传给 opendir 前必须先拷贝到本地缓冲区。
+  char dir_path[1024];
+  DIR *dir_handle = nullptr;
+  if (search_dir.length() <= 0 ||
+      search_dir.length() >= static_cast<int32_t>(sizeof(dir_path) - 1)) {
+    ret = OB_INVALID_ARGUMENT;
+  } else {
+    MEMCPY(dir_path, search_dir.ptr(), search_dir.length());
+    dir_path[search_dir.length()] = '\0';
+    dir_handle = ::opendir(dir_path);
+  }
+  if (OB_FAIL(ret)) {
+  } else if (dir_handle == nullptr) {
     ret = OB_FILE_NOT_EXIST;
   } else {
     struct dirent *entry = nullptr;
@@ -214,7 +225,18 @@ int expand_glob(const ObString &pattern, ObIAllocator &allocator, ObIArray<ObStr
   // 排序后拼接完整路径，保证多次执行结果顺序稳定。
   for (int64_t i = 0; OB_SUCC(ret) && i < names.count(); ++i) {
     for (int64_t j = i + 1; j < names.count(); ++j) {
-      if (0 < strcmp(names.at(i).ptr(), names.at(j).ptr())) {
+      // ObString 不以 '\0' 结尾，不能直接用 strcmp，按长度前缀比较。
+      const ObString &left = names.at(i);
+      const ObString &right = names.at(j);
+      const int32_t min_length = left.length() < right.length() ? left.length() : right.length();
+      int cmp = 0;
+      if (min_length > 0) {
+        cmp = memcmp(left.ptr(), right.ptr(), min_length);
+      }
+      if (0 == cmp) {
+        cmp = left.length() - right.length();
+      }
+      if (0 < cmp) {
         const ObString tmp = names.at(i);
         names.at(i) = names.at(j);
         names.at(j) = tmp;
