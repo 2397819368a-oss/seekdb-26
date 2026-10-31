@@ -96,6 +96,93 @@ ObTokenizeHelperCacheEntry &alloc_helper_cache_slot()
   entry.reset_entry();
   return entry;
 }
+
+// 线程级 tokenize 结果缓存：完全相同的入参（parser、properties、全文、输出模式、排序规则）
+// 复用上一次切分得到的 JSON 二进制结果，避免重复做词典切分与 JSON 构造。
+struct ObTokenizeResultCacheEntry
+{
+  ObTokenizeResultCacheEntry() : arena_(common::ObMemAttr("TokResultCache")) {}
+  void reset_entry()
+  {
+    arena_.reset();
+    parser_name_.reset();
+    properties_.reset();
+    fulltext_.reset();
+    raw_binary_.reset();
+    output_mode_ = -1;
+    collation_type_ = -1;
+    valid_ = false;
+  }
+  common::ObArenaAllocator arena_;
+  common::ObString parser_name_;
+  common::ObString properties_;
+  common::ObString fulltext_;
+  common::ObString raw_binary_;
+  int32_t output_mode_ = -1;
+  int32_t collation_type_ = -1;
+  bool valid_ = false;
+};
+constexpr int64_t TOKENIZE_RESULT_CACHE_SIZE = 8;
+constexpr int64_t TOKENIZE_RESULT_MAX_LENGTH = 65536;
+struct ObTokenizeResultCache
+{
+  ObTokenizeResultCacheEntry entries_[TOKENIZE_RESULT_CACHE_SIZE];
+  int64_t next_slot_ = 0;
+};
+thread_local ObTokenizeResultCache g_tokenize_result_cache;
+
+ObTokenizeResultCacheEntry *find_result_cache(const common::ObString &parser_name,
+                                              const common::ObString &properties,
+                                              const common::ObString &fulltext,
+                                              const int32_t output_mode,
+                                              const int32_t collation_type)
+{
+  ObTokenizeResultCacheEntry *ret = nullptr;
+  for (int64_t i = 0; i < TOKENIZE_RESULT_CACHE_SIZE; ++i) {
+    ObTokenizeResultCacheEntry &entry = g_tokenize_result_cache.entries_[i];
+    if (entry.valid_
+        && entry.collation_type_ == collation_type
+        && entry.output_mode_ == output_mode
+        && entry.parser_name_ == parser_name
+        && entry.properties_ == properties
+        && entry.fulltext_ == fulltext) {
+      ret = &entry;
+      break;
+    }
+  }
+  return ret;
+}
+
+int store_result_cache(const common::ObString &parser_name,
+                       const common::ObString &properties,
+                       const common::ObString &fulltext,
+                       const int32_t output_mode,
+                       const int32_t collation_type,
+                       common::ObIJsonBase *json_result)
+{
+  int ret = OB_SUCCESS;
+  ObTokenizeResultCacheEntry &entry =
+      g_tokenize_result_cache.entries_[g_tokenize_result_cache.next_slot_];
+  g_tokenize_result_cache.next_slot_ =
+      (g_tokenize_result_cache.next_slot_ + 1) % TOKENIZE_RESULT_CACHE_SIZE;
+  entry.reset_entry();
+  common::ObString raw_binary;
+  if (OB_ISNULL(json_result)) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_FAIL(share::ObJsonWrapper::get_raw_binary(json_result, raw_binary, &entry.arena_))) {
+  } else if (raw_binary.length() > TOKENIZE_RESULT_MAX_LENGTH) {
+    ret = OB_SIZE_OVERFLOW;
+  } else if (OB_FAIL(ob_write_string(entry.arena_, parser_name, entry.parser_name_))
+             || OB_FAIL(ob_write_string(entry.arena_, properties, entry.properties_))
+             || OB_FAIL(ob_write_string(entry.arena_, fulltext, entry.fulltext_))) {
+  } else {
+    entry.raw_binary_ = raw_binary;
+    entry.collation_type_ = collation_type;
+    entry.output_mode_ = output_mode;
+    entry.valid_ = true;
+  }
+  return ret;
+}
 } // namespace
 
 ObExprTokenize::ObExprTokenize(common::ObIAllocator &alloc)
@@ -118,17 +205,43 @@ int ObExprTokenize::eval_tokenize(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &e
 
   ObIJsonBase *json_result = nullptr;
   TokenizeParam param;
+  ObTokenizeResultCacheEntry *cached_entry = nullptr;
 
   // check param num, which is checked in ObExprOperator::calc_result_typeN.
   if (OB_UNLIKELY(expr.arg_cnt_ < 1 || expr.arg_cnt_ > 3)) {
     ret = OB_INVALID_ARGUMENT;
   } else if (OB_FAIL(parse_param(expr, ctx, temp_allocator, param))) {
+  } else if (OB_NOT_NULL(cached_entry = find_result_cache(
+                             param.parser_name_,
+                             param.properties_,
+                             param.fulltext_,
+                             static_cast<int32_t>(param.output_mode_),
+                             static_cast<int32_t>(param.meta_.get_collation_type())))
+             && cached_entry->raw_binary_.length() > 0) {
+    // 命中线程级结果缓存，直接把上次的 JSON 二进制结果打包返回
+    if (OB_FAIL(ObJsonExprHelper::pack_json_str_res(expr,
+                                                    ctx,
+                                                    expr_datum,
+                                                    cached_entry->raw_binary_,
+                                                    &temp_allocator))) {
+    }
   } else if (OB_FAIL(tokenize_fulltext(param, param.output_mode_, temp_allocator, json_result))) {
   } else if (OB_FAIL(ObJsonExprHelper::pack_json_res(expr,
                                                      ctx,
                                                      temp_allocator,
                                                      json_result,
                                                      expr_datum))) {
+  } else {
+    // 缓存填充失败不影响本次结果
+    int tmp_ret = store_result_cache(param.parser_name_,
+                                     param.properties_,
+                                     param.fulltext_,
+                                     static_cast<int32_t>(param.output_mode_),
+                                     static_cast<int32_t>(param.meta_.get_collation_type()),
+                                     json_result);
+    if (OB_SUCCESS != tmp_ret) {
+      LOG_DEBUG("store tokenize result cache failed", K(tmp_ret));
+    }
   }
 
   return ret;
