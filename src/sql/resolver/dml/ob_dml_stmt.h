@@ -41,6 +41,8 @@ class ObStmtResolver;
 class ObDMLStmt;
 class ObStmtExprVisitor;
 class ObStmtExprGetter;
+// read_csv / read_json / read_parquet 的绑定期结构（定义见 sql/table_function/file_table_function.h）
+struct FileTableDefinition;
 
 enum MulModeTableType {
   INVALID_TABLE_TYPE = 0,
@@ -150,9 +152,12 @@ struct TableItem
     snapshot_query_expr_ = nullptr;
     snapshot_query_type_ = SnapshotQueryType::NOT_USING;
     function_table_expr_ = nullptr;
+    table_function_id_ = 0;
+    table_function_requires_all_columns_ = false;
     ddl_schema_version_ = 0;
     ddl_table_id_ = common::OB_INVALID_ID;
     json_table_def_ = nullptr;
+    file_table_def_ = nullptr;
     table_type_ = MAX_TABLE_TYPE;
     values_table_def_ = NULL;
     sample_info_ = nullptr;
@@ -260,6 +265,7 @@ struct TableItem
 
   ObJsonTableDef* get_json_table_def() { return json_table_def_; }
   int deep_copy_json_table_def(const ObJsonTableDef& jt_def, ObIRawExprCopier &expr_copier, ObIAllocator* allocator);
+  int deep_copy_file_table_def(const FileTableDefinition &ft_def, ObIAllocator &allocator);
   int deep_copy_values_table_def(const ObValuesTableDef& table_def,
                                  ObIRawExprCopier &expr_copier,
                                  ObIAllocator* allocator);
@@ -293,6 +299,10 @@ struct TableItem
   ObRawExpr *snapshot_query_expr_;
   SnapshotQueryType snapshot_query_type_;
   ObRawExpr *function_table_expr_;
+  uint64_t table_function_id_;
+  bool table_function_requires_all_columns_;
+  common::ObSEArray<int64_t, 4> function_argument_column_counts_;
+  common::ObSEArray<common::ObString, 8> function_column_names_;
   int64_t ddl_schema_version_;
   int64_t ddl_table_id_;
   // table partition
@@ -301,6 +311,8 @@ struct TableItem
   common::ObSEArray<ObExecParamRawExpr*, 4, common::ModulePageAllocator, true> exec_params_;
   // json table
   ObJsonTableDef *json_table_def_;
+  // 文件表（read_csv / read_json / read_parquet），生命周期同语句 allocator
+  FileTableDefinition *file_table_def_;
   // values table
   ObValuesTableDef *values_table_def_;
   // sample scan infos
