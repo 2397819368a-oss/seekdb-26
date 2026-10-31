@@ -46,7 +46,8 @@ public:
         cache_stop_(allocator),
         dict_main_(nullptr),
         dict_quan_(nullptr),
-        dict_stop_(nullptr)
+        dict_stop_(nullptr),
+        dicts_from_thread_cache_(false)
   {
   }
 
@@ -84,8 +85,9 @@ private:
 
   bool should_read_newest_table() const;
 
-  int build_dict_from_cache(const ObFTDictDesc &desc,
+  int build_dict_into_cache(const ObFTDictDesc &desc,
                             ObFTCacheRangeContainer &container,
+                            ObIAllocator &alloc,
                             ObIFTDict *&dict);
 
 private:
@@ -106,6 +108,8 @@ private:
   ObIFTDict *dict_main_;
   ObIFTDict *dict_quan_;
   ObIFTDict *dict_stop_;
+  // true 时 dict_* 指向线程级缓存的词典，reset 时不负责释放
+  bool dicts_from_thread_cache_;
 
   DISABLE_COPY_ASSIGN(ObIKFTParser);
 };
