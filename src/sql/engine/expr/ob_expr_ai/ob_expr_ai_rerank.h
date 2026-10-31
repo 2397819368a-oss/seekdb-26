@@ -55,10 +55,21 @@ private:
                                          common::ObString &doc_key, const common::ObAIFuncExprInfo &info, const share::ObAiModelEndpointInfo &endpoint_info, ObDatum &res);
   static int get_doc_array_from_documents_array_with_key(ObIAllocator &allocator, ObJsonArray *document_object_array, ObString &doc_key, ObJsonArray *&doc_array);
   static int sort_document_array_by_model_result(common::ObIAllocator &allocator, common::ObJsonArray *document_array, common::ObJsonArray *model_result_array, common::ObJsonArray *&sorted_document_array);
+  static int eval_ai_rerank_batch(ObIAllocator &allocator,
+                                  const ObAIFuncExprInfo &info,
+                                  const share::ObAiModelEndpointInfo &endpoint_info,
+                                  ObArray<ObString> &header_array,
+                                  ObString &query,
+                                  ObJsonArray *document_array,
+                                  ObJsonArray *&result_array);
+  // 校验模型返回的排序结果：条数、元素结构、index 取值范围与分值合法性
+  static int check_rerank_result(ObJsonArray *result_array, int64_t expected_count);
+  static int get_rerank_index_and_score(ObJsonObject *result_obj, int64_t &index, double &score);
+  // 按分值降序、index 升序稳定排序，保证不同批次合并后顺序确定
+  static int sort_rerank_result(ObIAllocator &allocator, ObJsonArray *result_array, ObJsonArray *&sorted_array);
   static int construct_config_json(common::ObIAllocator &allocator, int64_t top_k, int64_t return_doc, common::ObJsonObject *&config_json);
   static int construct_batch_document_array(common::ObIAllocator &allocator, common::ObJsonArray *document_array, int64_t start_idx, int64_t end_idx, common::ObJsonArray *&batch_document_array);
   static int batch_result_add_base(common::ObIAllocator &allocator, common::ObJsonArray *array, int64_t start_idx);
-  static int compact_json_array_by_key(common::ObIAllocator &allocator, common::ObJsonArray *array1, common::ObJsonArray *array2, common::ObString &score_key, common::ObJsonArray *&compact_array);
   static constexpr int MODEL_IDX = 0;
   static constexpr int QUERY_IDX = 1;
   static constexpr int DOCUMENTS_IDX = 2;
