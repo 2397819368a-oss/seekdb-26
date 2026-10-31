@@ -8939,6 +8939,7 @@ FORMAT NAME_OB
 | NAME_OB
 {
   /* `header` option: mark the csv format as having a header line */
+  (void)$1;
   ParseNode *bool_node = NULL;
   malloc_terminal_node(bool_node, result->malloc_pool_, T_BOOL);
   bool_node->value_ = 1;
@@ -8947,6 +8948,8 @@ FORMAT NAME_OB
 | NAME_OB STRING_VALUE
 {
   /* tolerate export-only options such as `nullstr 'NULL'`, ignored for outfile */
+  (void)$1;
+  (void)$2;
   $$ = NULL;
 }
 ;
