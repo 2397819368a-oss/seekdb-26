@@ -10975,5 +10975,18 @@
     "info_cn": "",
     "background_cn": "",
     "ref_url": ""
+  },
+  "enable_file_sql": {
+    "id": 10754,
+    "name": "enable_file_sql",
+    "default_value": "0",
+    "base_value": "0",
+    "data_type": "bool",
+    "info": "Enables read_csv/read_json/read_parquet/glob table functions and COPY TO files.",
+    "flags": "SESSION",
+    "publish_version": "",
+    "info_cn": "开启后允许使用本地文件表函数与 COPY TO",
+    "background_cn": "",
+    "ref_url": ""
   }
 }

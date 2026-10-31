@@ -26,8 +26,12 @@ def discover(arguments):
     config["execution_constraints"] = ["@platforms//os:" + host_os, "@platforms//cpu:" + host_cpu]
     stdlib = Path(sysconfig.get_path("stdlib"))
     if os.name == "nt":
-        config["python_libs"] = {"Lib": str(stdlib), "DLLs": str(Path(sys.base_prefix) / "DLLs")}
-        config["python_libs"].update({"bin/" + path.name: str(path) for path in Path(sys.base_prefix).glob("*.dll")})
+        base = sys.base_prefix
+        if not base.endswith(os.sep):
+            base = base + os.sep
+        base = Path(base)
+        config["python_libs"] = {"Lib": str(stdlib), "DLLs": str(base / "DLLs")}
+        config["python_libs"].update({"bin/" + path.name: str(path) for path in base.glob("*.dll")})
     else:
         config["python_libs"][stdlib.parent.name + "/" + stdlib.name] = str(stdlib)
         platstdlib = Path(sysconfig.get_path("platstdlib"))
