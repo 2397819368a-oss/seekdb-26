@@ -39,6 +39,65 @@ namespace oceanbase
 {
 namespace sql
 {
+namespace
+{
+// 线程级 tokenize 缓存：parser 名称与原始 properties 相同时，
+// 复用 reform 后的 properties 与已完成 init 的 ObFTParseHelper，
+// 避免每次调用重复做 JSON 解析/重建与 parser 初始化。
+struct ObTokenizeHelperCacheEntry
+{
+  ObTokenizeHelperCacheEntry() : arena_(common::ObMemAttr("TokHelperCache")) {}
+  void reset_entry()
+  {
+    helper_.reset();
+    arena_.reset();
+    parser_name_.reset();
+    raw_properties_.reset();
+    reformed_properties_.reset();
+    valid_ = false;
+  }
+  common::ObArenaAllocator arena_;
+  storage::ObFTParseHelper helper_;
+  common::ObString parser_name_;
+  common::ObString raw_properties_;
+  common::ObString reformed_properties_;
+  bool valid_ = false;
+};
+constexpr int64_t TOKENIZE_HELPER_CACHE_SIZE = 4;
+struct ObTokenizeHelperCache
+{
+  ObTokenizeHelperCacheEntry entries_[TOKENIZE_HELPER_CACHE_SIZE];
+  int64_t next_slot_ = 0;
+};
+thread_local ObTokenizeHelperCache g_tokenize_helper_cache;
+
+ObTokenizeHelperCacheEntry *find_helper_cache(const common::ObString &parser_name,
+                                              const common::ObString &raw_properties)
+{
+  ObTokenizeHelperCacheEntry *ret = nullptr;
+  for (int64_t i = 0; i < TOKENIZE_HELPER_CACHE_SIZE; ++i) {
+    ObTokenizeHelperCacheEntry &entry = g_tokenize_helper_cache.entries_[i];
+    if (entry.valid_
+        && entry.parser_name_ == parser_name
+        && entry.raw_properties_ == raw_properties) {
+      ret = &entry;
+      break;
+    }
+  }
+  return ret;
+}
+
+ObTokenizeHelperCacheEntry &alloc_helper_cache_slot()
+{
+  ObTokenizeHelperCacheEntry &entry =
+      g_tokenize_helper_cache.entries_[g_tokenize_helper_cache.next_slot_];
+  g_tokenize_helper_cache.next_slot_ =
+      (g_tokenize_helper_cache.next_slot_ + 1) % TOKENIZE_HELPER_CACHE_SIZE;
+  entry.reset_entry();
+  return entry;
+}
+} // namespace
+
 ObExprTokenize::ObExprTokenize(common::ObIAllocator &alloc)
     : ObStringExprOperator(alloc,
                            T_FUN_TOKENIZE,
@@ -81,7 +140,19 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
                                       ObIJsonBase *&result)
 {
   int ret = OB_SUCCESS;
-  storage::ObFTParseHelper tokenize_helper;
+  // 优先复用线程级缓存的 helper（init 结果与 allocator 无关，仅按调用切换 allocator）
+  storage::ObFTParseHelper *helper_ptr = nullptr;
+  storage::ObFTParseHelper local_helper;
+  for (int64_t i = 0; i < TOKENIZE_HELPER_CACHE_SIZE; ++i) {
+    ObTokenizeHelperCacheEntry &entry = g_tokenize_helper_cache.entries_[i];
+    if (entry.valid_
+        && entry.parser_name_ == param.parser_name_
+        && entry.reformed_properties_ == param.properties_) {
+      helper_ptr = &entry.helper_;
+      helper_ptr->rebind_allocator(&allocator);
+      break;
+    }
+  }
   const int64_t ft_word_bkt_cnt = MIN(MAX(param.fulltext_.length() / 2, 2), 997);
   int64_t doc_len = 0;
   storage::ObFTWordMap token_map;
@@ -90,11 +161,13 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
 
   if (TokenizeParam::OUTPUT_MODE::DEFAULT != mode && TokenizeParam::OUTPUT_MODE::ALL != mode) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (OB_FAIL(tokenize_helper.init(&allocator, param.parser_name_, param.properties_))) {
+  } else if (nullptr == helper_ptr
+             && OB_FAIL(local_helper.init(&allocator, param.parser_name_, param.properties_))) {
+  } else if (FALSE_IT(helper_ptr = (nullptr == helper_ptr ? &local_helper : helper_ptr))) {
   } else if (OB_FAIL(token_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
   } else if (
       (0 != param.fulltext_.length())
-      && OB_FAIL(tokenize_helper.segment(
+      && OB_FAIL(helper_ptr->segment(
                      param.meta_,
                      param.fulltext_.ptr(),
                      param.fulltext_.length(),
@@ -103,14 +176,14 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
   } else {
     switch (param.output_mode_) {
     case TokenizeParam::OUTPUT_MODE::DEFAULT: {
-      if (OB_FAIL(tokenize_helper.make_token_array_json(token_map, result))) {
+      if (OB_FAIL(helper_ptr->make_token_array_json(token_map, result))) {
       } else {
         // pass
       }
       break;
     }
     case TokenizeParam::OUTPUT_MODE::ALL: {
-      if (OB_FAIL(tokenize_helper.make_detail_json(token_map, doc_len, result))) {
+      if (OB_FAIL(helper_ptr->make_detail_json(token_map, doc_len, result))) {
       } else {
         // pass
       }
@@ -212,8 +285,33 @@ int ObExprTokenize::parse_param(const ObExpr &expr,
   } else if (OB_FAIL(parse_fulltext(expr, ctx, param))) {
   } else if (OB_FAIL(parse_parser_name(expr, ctx, param))) {
   } else if (OB_FAIL(parse_parser_properties(expr, ctx, temp_allocator, param))) {
-  } else if (OB_FAIL(param.reform_parser_properties(param.properties_))) {
-  } else if (OB_FAIL(param.try_load_dictionary_for_ik())) {
+  } else {
+    // 相同 parser + properties 反复出现时，复用线程级缓存的 reform 结果
+    ObTokenizeHelperCacheEntry *entry = find_helper_cache(param.parser_name_, param.properties_);
+    if (nullptr != entry) {
+      param.properties_ = entry->reformed_properties_;
+    } else {
+      common::ObString raw_properties = param.properties_;
+      if (OB_FAIL(param.reform_parser_properties(param.properties_))) {
+      } else {
+        // 填充缓存失败不影响主流程
+        int tmp_ret = OB_SUCCESS;
+        ObTokenizeHelperCacheEntry &slot = alloc_helper_cache_slot();
+        if (OB_SUCCESS != (tmp_ret = ob_write_string(slot.arena_, param.parser_name_, slot.parser_name_))) {
+        } else if (OB_SUCCESS != (tmp_ret = ob_write_string(slot.arena_, raw_properties, slot.raw_properties_))) {
+        } else if (OB_SUCCESS != (tmp_ret = ob_write_string(slot.arena_, param.properties_, slot.reformed_properties_))) {
+        } else if (OB_SUCCESS != (tmp_ret = slot.helper_.init(&slot.arena_, param.parser_name_, param.properties_))) {
+        } else {
+          slot.valid_ = true;
+        }
+        if (OB_SUCCESS != tmp_ret) {
+          slot.valid_ = false;
+          LOG_WARN("failed to fill tokenize helper cache", K(tmp_ret));
+        }
+      }
+    }
+  }
+  if (OB_SUCC(ret) && OB_FAIL(param.try_load_dictionary_for_ik())) {
   }
   return ret;
 }
