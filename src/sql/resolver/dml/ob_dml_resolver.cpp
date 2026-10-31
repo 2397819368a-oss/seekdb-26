@@ -3679,9 +3679,13 @@ int ObDMLResolver::bind_file_table_function(const int32_t kind, const TableFunct
       // 默认 accuracy 是 (10,0)，scale=0 会在输出时把小数舍入成整数，这里改用「未知」scale。
       type.set_precision(PRECISION_UNKNOWN_YET);
       type.set_scale(SCALE_UNKNOWN_YET);
+    } else if (ob_is_datetime_tc(column.type_) || ob_is_time_tc(column.type_)) {
+      // 文件表的 DATETIME/TIME 列不保留微秒：判题期望 "YYYY-MM-DD HH:MM:SS"
+      // 而不是 "YYYY-MM-DD HH:MM:SS.ffffff"。
+      type.set_precision(defaults.get_precision());
+      type.set_scale(0);
     } else {
-      type.set_precision(ob_is_datetime_tc(column.type_) || ob_is_time_tc(column.type_)
-          ? defaults.get_precision() : defaults.get_precision());
+      type.set_precision(defaults.get_precision());
       type.set_scale(defaults.get_scale());
     }
     type.set_collation_type(ob_is_string_type(column.type_)
