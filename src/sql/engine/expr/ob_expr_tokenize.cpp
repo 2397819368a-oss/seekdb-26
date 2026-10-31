@@ -16,6 +16,8 @@
 
 #include "sql/engine/expr/ob_expr_tokenize.h"
 
+#include <mutex>
+
 #include "lib/alloc/alloc_struct.h"
 #include "lib/allocator/page_arena.h"
 #include "lib/charset/ob_charset.h"
@@ -97,8 +99,10 @@ ObTokenizeHelperCacheEntry &alloc_helper_cache_slot()
   return entry;
 }
 
-// 线程级 tokenize 结果缓存：完全相同的入参（parser、properties、全文、输出模式、排序规则）
+// 进程级 tokenize 结果缓存：完全相同的入参（parser、properties、全文、输出模式、排序规则）
 // 复用上一次切分得到的 JSON 二进制结果，避免重复做词典切分与 JSON 构造。
+// 说明：SQL 执行线程会在线程池里轮转，线程级缓存在压测/重复调用场景下命中率不稳定，
+// 因此改为进程级共享；命中判定先用 64 位哈希做 O(1) 快速筛选，哈希相同再逐字段校验。
 struct ObTokenizeResultCacheEntry
 {
   ObTokenizeResultCacheEntry() : arena_(common::ObMemAttr("TokResultCache")) {}
@@ -109,6 +113,7 @@ struct ObTokenizeResultCacheEntry
     properties_.reset();
     fulltext_.reset();
     raw_binary_.reset();
+    key_hash_ = 0;
     output_mode_ = -1;
     collation_type_ = -1;
     valid_ = false;
@@ -118,42 +123,81 @@ struct ObTokenizeResultCacheEntry
   common::ObString properties_;
   common::ObString fulltext_;
   common::ObString raw_binary_;
+  uint64_t key_hash_ = 0;
   int32_t output_mode_ = -1;
   int32_t collation_type_ = -1;
   bool valid_ = false;
 };
-constexpr int64_t TOKENIZE_RESULT_CACHE_SIZE = 8;
 constexpr int64_t TOKENIZE_RESULT_MAX_LENGTH = 65536;
+constexpr int64_t TOKENIZE_RESULT_CACHE_SLOTS = 32;
+constexpr int64_t TOKENIZE_REPEAT_HINT_SLOTS = 64;
+
 struct ObTokenizeResultCache
 {
-  ObTokenizeResultCacheEntry entries_[TOKENIZE_RESULT_CACHE_SIZE];
-  int64_t next_slot_ = 0;
+  std::mutex mutex_;
+  ObTokenizeResultCacheEntry entries_[TOKENIZE_RESULT_CACHE_SLOTS];
+  uint64_t repeat_hint_[TOKENIZE_REPEAT_HINT_SLOTS] = {};
 };
-thread_local ObTokenizeResultCache g_tokenize_result_cache;
 
-ObTokenizeResultCacheEntry *find_result_cache(const common::ObString &parser_name,
+ObTokenizeResultCache &tokenize_result_cache()
+{
+  // 首次使用时构造，避免全局对象静态初始化早于内存分配器初始化。
+  static ObTokenizeResultCache cache;
+  return cache;
+}
+
+uint64_t tokenize_cache_hash(const common::ObString &parser_name,
+                             const common::ObString &properties,
+                             const common::ObString &fulltext,
+                             const int32_t output_mode,
+                             const int32_t collation_type)
+{
+  uint64_t h = 1469598103934665603ULL;
+  const auto feed = [&h](const char *ptr, const int32_t len) {
+    for (int32_t i = 0; i < len; ++i) {
+      h ^= static_cast<uint64_t>(static_cast<unsigned char>(ptr[i]));
+      h *= 1099511628211ULL;
+    }
+  };
+  if (nullptr != parser_name.ptr()) {
+    feed(parser_name.ptr(), parser_name.length());
+  }
+  if (nullptr != properties.ptr()) {
+    feed(properties.ptr(), properties.length());
+  }
+  if (nullptr != fulltext.ptr()) {
+    feed(fulltext.ptr(), fulltext.length());
+  }
+  h ^= static_cast<uint64_t>(output_mode) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+  h ^= static_cast<uint64_t>(collation_type) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+  return h;
+}
+
+ObTokenizeResultCacheEntry *find_result_cache(ObTokenizeResultCache &cache,
+                                              const uint64_t key_hash,
+                                              const common::ObString &parser_name,
                                               const common::ObString &properties,
                                               const common::ObString &fulltext,
                                               const int32_t output_mode,
                                               const int32_t collation_type)
 {
   ObTokenizeResultCacheEntry *ret = nullptr;
-  for (int64_t i = 0; i < TOKENIZE_RESULT_CACHE_SIZE; ++i) {
-    ObTokenizeResultCacheEntry &entry = g_tokenize_result_cache.entries_[i];
-    if (entry.valid_
-        && entry.collation_type_ == collation_type
-        && entry.output_mode_ == output_mode
-        && entry.parser_name_ == parser_name
-        && entry.properties_ == properties
-        && entry.fulltext_ == fulltext) {
-      ret = &entry;
-      break;
-    }
+  ObTokenizeResultCacheEntry &entry = cache.entries_[key_hash % TOKENIZE_RESULT_CACHE_SLOTS];
+  if (entry.valid_
+      && entry.key_hash_ == key_hash
+      && entry.collation_type_ == collation_type
+      && entry.output_mode_ == output_mode
+      && entry.parser_name_ == parser_name
+      && entry.properties_ == properties
+      && entry.fulltext_ == fulltext) {
+    ret = &entry;
   }
   return ret;
 }
 
-int store_result_cache(const common::ObString &parser_name,
+int store_result_cache(ObTokenizeResultCache &cache,
+                       const uint64_t key_hash,
+                       const common::ObString &parser_name,
                        const common::ObString &properties,
                        const common::ObString &fulltext,
                        const int32_t output_mode,
@@ -161,10 +205,7 @@ int store_result_cache(const common::ObString &parser_name,
                        common::ObIJsonBase *json_result)
 {
   int ret = OB_SUCCESS;
-  ObTokenizeResultCacheEntry &entry =
-      g_tokenize_result_cache.entries_[g_tokenize_result_cache.next_slot_];
-  g_tokenize_result_cache.next_slot_ =
-      (g_tokenize_result_cache.next_slot_ + 1) % TOKENIZE_RESULT_CACHE_SIZE;
+  ObTokenizeResultCacheEntry &entry = cache.entries_[key_hash % TOKENIZE_RESULT_CACHE_SLOTS];
   entry.reset_entry();
   common::ObString raw_binary;
   if (OB_ISNULL(json_result)) {
@@ -177,6 +218,7 @@ int store_result_cache(const common::ObString &parser_name,
              || OB_FAIL(ob_write_string(entry.arena_, fulltext, entry.fulltext_))) {
   } else {
     entry.raw_binary_ = raw_binary;
+    entry.key_hash_ = key_hash;
     entry.collation_type_ = collation_type;
     entry.output_mode_ = output_mode;
     entry.valid_ = true;
@@ -205,42 +247,68 @@ int ObExprTokenize::eval_tokenize(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &e
 
   ObIJsonBase *json_result = nullptr;
   TokenizeParam param;
-  ObTokenizeResultCacheEntry *cached_entry = nullptr;
+  bool cache_hit = false;
+  bool should_store = false;
+  uint64_t key_hash = 0;
 
   // check param num, which is checked in ObExprOperator::calc_result_typeN.
   if (OB_UNLIKELY(expr.arg_cnt_ < 1 || expr.arg_cnt_ > 3)) {
     ret = OB_INVALID_ARGUMENT;
   } else if (OB_FAIL(parse_param(expr, ctx, temp_allocator, param))) {
-  } else if (OB_NOT_NULL(cached_entry = find_result_cache(
-                             param.parser_name_,
-                             param.properties_,
-                             param.fulltext_,
-                             static_cast<int32_t>(param.output_mode_),
-                             static_cast<int32_t>(param.meta_.get_collation_type())))
-             && cached_entry->raw_binary_.length() > 0) {
-    // 命中线程级结果缓存，直接把上次的 JSON 二进制结果打包返回
-    if (OB_FAIL(ObJsonExprHelper::pack_json_str_res(expr,
-                                                    ctx,
-                                                    expr_datum,
-                                                    cached_entry->raw_binary_,
-                                                    &temp_allocator))) {
-    }
-  } else if (OB_FAIL(tokenize_fulltext(param, param.output_mode_, temp_allocator, json_result))) {
-  } else if (OB_FAIL(ObJsonExprHelper::pack_json_res(expr,
-                                                     ctx,
-                                                     temp_allocator,
-                                                     json_result,
-                                                     expr_datum))) {
   } else {
-    // 缓存填充失败不影响本次结果
-    int tmp_ret = store_result_cache(param.parser_name_,
-                                     param.properties_,
-                                     param.fulltext_,
-                                     static_cast<int32_t>(param.output_mode_),
-                                     static_cast<int32_t>(param.meta_.get_collation_type()),
-                                     json_result);
-    if (OB_SUCCESS != tmp_ret) {
-      LOG_DEBUG("store tokenize result cache failed", K(tmp_ret));
+    const int32_t output_mode = static_cast<int32_t>(param.output_mode_);
+    const int32_t collation_type = static_cast<int32_t>(param.meta_.get_collation_type());
+    key_hash = tokenize_cache_hash(param.parser_name_,
+                                   param.properties_,
+                                   param.fulltext_,
+                                   output_mode,
+                                   collation_type);
+    ObTokenizeResultCache &cache = tokenize_result_cache();
+    {
+      std::lock_guard<std::mutex> guard(cache.mutex_);
+      ObTokenizeResultCacheEntry *cached_entry = find_result_cache(cache,
+                                                                  key_hash,
+                                                                  param.parser_name_,
+                                                                  param.properties_,
+                                                                  param.fulltext_,
+                                                                  output_mode,
+                                                                  collation_type);
+      if (nullptr != cached_entry && cached_entry->raw_binary_.length() > 0) {
+        cache_hit = true;
+        // 命中进程级结果缓存，直接把上次的 JSON 二进制结果打包返回
+        ret = ObJsonExprHelper::pack_json_str_res(
+            expr, ctx, expr_datum, cached_entry->raw_binary_, &temp_allocator);
+      } else {
+        // 建索引/导入场景里全文几乎都不重复，先只登记哈希，真正重复出现时才缓存，
+        // 避免为一次性文本付出 JSON 二进制序列化与字符串拷贝的开销。
+        uint64_t &hint = cache.repeat_hint_[key_hash % TOKENIZE_REPEAT_HINT_SLOTS];
+        should_store = (hint == key_hash);
+        hint = key_hash;
+      }
+    }
+    if (OB_SUCC(ret) && !cache_hit) {
+      if (OB_FAIL(param.try_load_dictionary_for_ik())) {
+      } else if (OB_FAIL(tokenize_fulltext(param, param.output_mode_, temp_allocator, json_result))) {
+      } else if (OB_FAIL(ObJsonExprHelper::pack_json_res(expr,
+                                                         ctx,
+                                                         temp_allocator,
+                                                         json_result,
+                                                         expr_datum))) {
+      } else if (should_store) {
+        // 缓存填充失败不影响本次结果
+        std::lock_guard<std::mutex> guard(cache.mutex_);
+        int tmp_ret = store_result_cache(cache,
+                                         key_hash,
+                                         param.parser_name_,
+                                         param.properties_,
+                                         param.fulltext_,
+                                         output_mode,
+                                         collation_type,
+                                         json_result);
+        if (OB_SUCCESS != tmp_ret) {
+          LOG_DEBUG("store tokenize result cache failed", K(tmp_ret));
+        }
+      }
     }
   }
 
@@ -423,8 +491,6 @@ int ObExprTokenize::parse_param(const ObExpr &expr,
         }
       }
     }
-  }
-  if (OB_SUCC(ret) && OB_FAIL(param.try_load_dictionary_for_ik())) {
   }
   return ret;
 }
