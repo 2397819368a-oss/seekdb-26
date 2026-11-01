@@ -10676,21 +10676,12 @@ int ObSysVarFactory::create_sys_var(ObIAllocator &allocator_, share::ObSysVarCla
       ret = create_one_sys_var<ObSysVarObSparseDropRatioSearch>(allocator_, sys_var_ptr, "ObSysVarObSparseDropRatioSearch");
       break;
     }
-      if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarEnableFileSql())) {
-        ret = OB_ALLOCATE_MEMORY_FAILED;
-        LOG_ERROR("fail to new ObSysVarEnableFileSql", K(ret));
-      } else {
-        store_buf_[share::ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(share::SYS_VAR_ENABLE_FILE_SQL))] = sys_var_ptr;
-        ptr = (void *)((char *)ptr + sizeof(ObSysVarEnableFileSql));
-      }
+    case share::SYS_VAR_ENABLE_FILE_SQL: {
+      ret = create_one_sys_var<ObSysVarEnableFileSql>(allocator_, sys_var_ptr, "ObSysVarEnableFileSql");
+      break;
     }
-    if (OB_SUCC(ret)) {
-      if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarAiColumnStrictRead())) {
-        ret = OB_ALLOCATE_MEMORY_FAILED;
-        LOG_ERROR("fail to new ObSysVarAiColumnStrictRead", K(ret));
-      } else {
-        store_buf_[share::ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(share::SYS_VAR_AI_COLUMN_STRICT_READ))] = sys_var_ptr;
-        ptr = (void *)((char *)ptr + sizeof(ObSysVarAiColumnStrictRead));
+    case share::SYS_VAR_AI_COLUMN_STRICT_READ: {
+      ret = create_one_sys_var<ObSysVarAiColumnStrictRead>(allocator_, sys_var_ptr, "ObSysVarAiColumnStrictRead");
       break;
     }
 
