@@ -162,3 +162,5 @@ DROP DATABASE sandbox_try_ivfpq;
 - 用官方 benchmark 的数字代替自己场景的实测
 - 在线上库直接重建索引，没有沙箱、没有回滚路径
 - 把"RRF 和加权都试过了"当结论，却不给评测集和重合度数据
+
+<!-- OB-S:-1FL_tZ3_8ck6PD1qxyEVQ -->
