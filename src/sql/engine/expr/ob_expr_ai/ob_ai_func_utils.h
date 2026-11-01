@@ -379,9 +379,14 @@ public:
   static bool is_valid_prompt_object(ObJsonObject* prompt_object);
   static int replace_all_str_args_in_template(ObIAllocator &allocator, ObJsonObject* prompt_object, ObString& replaced_prompt_str);
   static int construct_prompt_object(ObIAllocator &allocator, ObString &template_str, ObJsonArray *args_array, ObJsonObject *&prompt_object);
+  // 将单个 arg 节点渲染为可嵌入模板的文本：字符串原样输出、嵌套 Prompt 递归渲染、其余 JSON 序列化
+  static int render_arg_node(ObIAllocator &allocator, ObIJsonBase *arg_node, ObString &str, const int64_t depth = 0);
   static constexpr char prompt_template_key[20] = "template";
   static constexpr char prompt_args_key[20] = "args";
+  static constexpr int64_t MAX_PROMPT_NEST_DEPTH = 8;
 private:
+  static int replace_args_in_template_impl(ObIAllocator &allocator, ObJsonObject* prompt_object,
+                                           ObString& replaced_prompt_str, const int64_t depth);
   DISALLOW_COPY_AND_ASSIGN(ObAIFuncPromptObjectUtils);
 };
 

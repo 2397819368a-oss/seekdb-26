@@ -37,6 +37,11 @@ public:
                                 int64_t param_num,
                                 common::ObExprTypeCtx &type_ctx) const override;
   static int eval_ai_embed(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res);
+  // 批量执行：一个请求携带当前批次中所有非 NULL 输入，再按原始行顺序回填结果
+  static int eval_batch_ai_embed(const ObExpr &expr,
+                                 ObEvalCtx &ctx,
+                                 const ObBitVector &skip,
+                                 const int64_t batch_size);
   virtual int cg_expr(ObExprCGCtx &expr_cg_ctx, 
                       const ObRawExpr &raw_expr,
                       ObExpr &rt_expr) const override;
@@ -45,6 +50,14 @@ private:
   static constexpr int MODEL_IDX = 0;
   static constexpr int CONTENT_IDX = 1;
   static constexpr int DIM_IDX = 2;
+  // 单行/单批公共的请求逻辑：把 contents 一次性发给模型并逐条回填 results
+  static int do_embed_request(const ObExpr &expr,
+                             ObEvalCtx &ctx,
+                             const common::ObString &model_id,
+                             common::ObArray<common::ObString> &contents,
+                             const common::ObArray<int64_t> &dimensions,
+                             common::ObArray<common::ObString> &results,
+                             common::ObIAllocator &allocator);
   DISALLOW_COPY_AND_ASSIGN(ObExprAIEmbed);
 };
 

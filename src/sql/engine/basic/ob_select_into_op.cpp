@@ -38,7 +38,7 @@ OB_SERIALIZE_MEMBER(ObSelectIntoOpInput, task_id_, sqc_id_);
 OB_SERIALIZE_MEMBER((ObSelectIntoSpec, ObOpSpec), into_type_, user_vars_, outfile_name_,
     field_str_, line_str_, closed_cht_, is_optional_, select_exprs_, is_single_, max_file_size_,
     escaped_cht_, cs_type_, parallel_, buffer_size_, is_overwrite_,
-    external_properties_);
+    external_properties_, header_names_);
 
 
 int ObSelectIntoOp::inner_open()
@@ -952,6 +952,20 @@ int ObSelectIntoOp::into_outfile(ObExternalFileWriter *data_writer)
   ObCsvFileWriter *csv_data_writer = NULL;
   if (OB_ISNULL(csv_data_writer = static_cast<ObCsvFileWriter *>(data_writer))) {
     ret = OB_ERR_UNEXPECTED;
+  } else if (!header_written_ && MY_SPEC.header_names_.count() > 0) {
+    for (int64_t i = 0; OB_SUCC(ret) && i < MY_SPEC.header_names_.count(); ++i) {
+      ObObj header_obj;
+      header_obj.set_varchar(MY_SPEC.header_names_.at(i));
+      header_obj.set_collation_type(cs_type_);
+      if (OB_FAIL(write_obj_to_file(header_obj, *csv_data_writer, false))) {
+      } else if (i != MY_SPEC.header_names_.count() - 1
+                 && OB_FAIL(write_obj_to_file(field_str_, *csv_data_writer))) {
+      }
+    }
+    if (OB_SUCC(ret) && OB_FAIL(write_obj_to_file(line_str_, *csv_data_writer))) {
+    } else {
+      header_written_ = true;
+    }
   }
   for (int64_t i = 0; OB_SUCC(ret) && i < select_exprs.count(); ++i) {
     if (OB_ISNULL(select_exprs.at(i))) {
@@ -992,6 +1006,23 @@ int ObSelectIntoOp::into_outfile_batch_csv(const ObBatchRows &brs, ObExternalFil
   ObDatum *datum = NULL;
   ObObj obj;
   ObCsvFileWriter *csv_data_writer = NULL;
+  if (OB_ISNULL(csv_data_writer = static_cast<ObCsvFileWriter *>(data_writer))) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (!header_written_ && MY_SPEC.header_names_.count() > 0) {
+    for (int64_t i = 0; OB_SUCC(ret) && i < MY_SPEC.header_names_.count(); ++i) {
+      ObObj header_obj;
+      header_obj.set_varchar(MY_SPEC.header_names_.at(i));
+      header_obj.set_collation_type(cs_type_);
+      if (OB_FAIL(write_obj_to_file(header_obj, *csv_data_writer, false))) {
+      } else if (i != MY_SPEC.header_names_.count() - 1
+                 && OB_FAIL(write_obj_to_file(field_str_, *csv_data_writer))) {
+      }
+    }
+    if (OB_SUCC(ret) && OB_FAIL(write_obj_to_file(line_str_, *csv_data_writer))) {
+    } else {
+      header_written_ = true;
+    }
+  }
   for (int64_t i = 0; OB_SUCC(ret) && i < select_exprs.count(); ++i) {
     if (OB_FAIL(select_exprs.at(i)->eval_batch(eval_ctx_, *brs.skip_, brs.size_))) {
     } else if (OB_FAIL(datum_vectors.push_back(select_exprs.at(i)->locate_expr_datumvector(eval_ctx_)))) {

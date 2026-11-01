@@ -1195,7 +1195,11 @@ public:
       lock_session_id_(0),
       lock_session_create_ts_(0),
       lock_priority_(transaction::tablelock::ObTableLockPriority::NORMAL),
-      data_version_(0)
+      data_version_(0),
+      is_retry_ai_column_(false),
+      retry_ai_column_sql_(),
+      retry_ai_column_purge_sql_(),
+      retry_ai_column_enqueue_sql_()
   {
   }
   virtual ~ObAlterTableArg()
@@ -1302,6 +1306,12 @@ public:
   int64_t lock_session_create_ts_;
   transaction::tablelock::ObTableLockPriority lock_priority_;
   uint64_t data_version_;
+  // local only: retry ai column is executed as a standalone dml statement,
+  // these fields are not serialized.
+  bool is_retry_ai_column_;
+  common::ObString retry_ai_column_sql_;
+  common::ObString retry_ai_column_purge_sql_;
+  common::ObString retry_ai_column_enqueue_sql_;
   int serialize_index_args(char *buf, const int64_t data_len, int64_t &pos) const;
   int deserialize_index_args(const char *buf, const int64_t data_len, int64_t &pos);
   int64_t get_index_args_serialize_size() const;

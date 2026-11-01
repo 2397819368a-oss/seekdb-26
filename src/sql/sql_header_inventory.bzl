@@ -34,6 +34,7 @@ SQL_PUBLIC_HEADER_ROOTS = [
     "engine/expr/ob_expr_vector.h",
     "engine/expr/ob_expr_xml_func_helper.h",
     "engine/expr/ob_lob_result_materializer.h",
+    "engine/expr/pl_composite_client_output.h",
     "engine/ob_exec_context.h",
     "engine/ob_operator.h",
     "engine/ob_physical_plan.h",
@@ -152,6 +153,8 @@ SQL_PUBLIC_HEADER_ROOTS = [
     "session/ob_sql_session_mgr.h",
     "session/ob_system_variable.h",
     "session/ob_user_resource_mgr.h",
+    "table_function/table_function.h",
+    "table_function/file_table_function.h",
 ]
 
 SQL_INTERFACE_CLOSURE_HEADERS = [

@@ -3022,6 +3022,9 @@ int ObSelectResolver::resolve_into_outfile_with_format(const ParseNode *node, Ob
                                      ? ObCharset::get_default_collation(external_format.csv_format_.cs_type_)
                                      : ObCharset::get_system_collation();
       if (OB_FAIL(external_format.csv_format_.init_format(ObDataInFileStruct(), 0, file_cs_type))) {
+      } else if (node->value_ == 1) {
+        /* `COPY ... TO` (marked by the parser) uses comma as its default field terminator */
+        external_format.csv_format_.field_term_str_ = ObString(1, ",");
       }
     }
     for (int i = 0; OB_SUCC(ret) && i < format_node->num_child_; ++i) {
@@ -3034,6 +3037,9 @@ int ObSelectResolver::resolve_into_outfile_with_format(const ParseNode *node, Ob
     }
     if (OB_SUCC(ret)
         && OB_FAIL(external_format.to_string_with_alloc(into_item.external_properties_, *allocator_, true))) {
+    }
+    if (OB_SUCC(ret)) {
+      into_item.with_header_ = external_format.csv_format_.parse_header_;
     }
   }
   // file: single, max_file_size, buffer_size

@@ -16,6 +16,7 @@
 
 #define USING_LOG_PREFIX SQL_RESV
 #include "ob_dml_stmt.h"
+#include "sql/table_function/file_table_function.h"
 #include "sql/rewrite/ob_transform_utils.h"
 #include "sql/optimizer/ob_logical_operator.h"
 using namespace oceanbase::sql;
@@ -158,6 +159,35 @@ int TableItem::deep_copy_json_table_def(const ObJsonTableDef& jt_def, ObIRawExpr
   return ret;
 }
 
+int TableItem::deep_copy_file_table_def(const FileTableDefinition &ft_def, ObIAllocator &allocator)
+{
+  int ret = OB_SUCCESS;
+  FileTableDefinition *copy = static_cast<FileTableDefinition *>(allocator.alloc(sizeof(FileTableDefinition)));
+  if (OB_ISNULL(copy)) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else {
+    copy = new (copy) FileTableDefinition();
+    copy->kind_ = ft_def.kind_;
+    copy->has_header_ = ft_def.has_header_;
+    copy->ignore_errors_ = ft_def.ignore_errors_;
+    copy->sample_size_ = ft_def.sample_size_;
+    copy->file_size_ = ft_def.file_size_;
+    copy->file_mtime_ = ft_def.file_mtime_;
+    OZ (ob_write_string(allocator, ft_def.path_, copy->path_));
+    OZ (ob_write_string(allocator, ft_def.delimiter_, copy->delimiter_));
+    OZ (ob_write_string(allocator, ft_def.quote_, copy->quote_));
+    OZ (ob_write_string(allocator, ft_def.escape_, copy->escape_));
+    OZ (ob_write_string(allocator, ft_def.null_str_, copy->null_str_));
+    for (int64_t i = 0; OB_SUCC(ret) && i < ft_def.columns_.count(); ++i) {
+      FileTableColumn column = ft_def.columns_.at(i);
+      OZ (ob_write_string(allocator, ft_def.columns_.at(i).name_, column.name_));
+      OZ (copy->columns_.push_back(column));
+    }
+    if (OB_SUCC(ret)) { file_table_def_ = copy; }
+  }
+  return ret;
+}
+
 int TableItem::deep_copy(ObIRawExprCopier &expr_copier,
                          const TableItem &other,
                          ObIAllocator* allocator)
@@ -185,9 +215,19 @@ int TableItem::deep_copy(ObIRawExprCopier &expr_copier,
   ddl_schema_version_ = other.ddl_schema_version_;
   ddl_table_id_ = other.ddl_table_id_;
   ref_query_ = other.ref_query_;
+  table_function_id_ = other.table_function_id_;
+  table_function_requires_all_columns_ = other.table_function_requires_all_columns_;
+  OZ (function_argument_column_counts_.assign(other.function_argument_column_counts_));
+  OZ (function_column_names_.assign(other.function_column_names_));
   SampleInfo *buf = NULL;
-  if (is_json_table() 
+  // 无 allocator 时（如只读重写场景）共享同一份绑定结果。
+  if (other.file_table_def_ != nullptr && allocator == nullptr) {
+    file_table_def_ = other.file_table_def_;
+  }
+  if (other.json_table_def_ != nullptr
       && OB_FAIL(deep_copy_json_table_def(*other.json_table_def_, expr_copier, allocator))) {
+  } else if (other.file_table_def_ != nullptr && allocator != nullptr
+             && OB_FAIL(deep_copy_file_table_def(*other.file_table_def_, *allocator))) {
   } else if (OB_FAIL(expr_copier.copy(other.snapshot_query_expr_, snapshot_query_expr_))) {
   } else if (OB_FAIL(expr_copier.copy(other.function_table_expr_, function_table_expr_))) {
   } else if (OB_FAIL(part_ids_.assign(other.part_ids_))) {
@@ -1555,7 +1595,7 @@ int ObDMLStmt::formalize_stmt_expr_reference(ObRawExprFactory *expr_factory,
       if (OB_ISNULL(column_item.expr_) ||
           OB_ISNULL(table_item = get_table_item_by_id(column_item.table_id_))) {
         ret = OB_ERR_UNEXPECTED;
-      } else if (table_item->is_function_table() ||
+      } else if ((table_item->is_function_table() && table_item->table_function_requires_all_columns_) ||
                  table_item->is_json_table() ||
                  table_item->for_update_ ||
                  table_item->is_values_table()) {
