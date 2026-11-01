@@ -225,6 +225,7 @@ public:
   int resolve_using_columns(const ParseNode &using_node, common::ObIArray<common::ObString> &column_names);
   int transfer_using_to_on_expr(JoinedTable *&joined_table);
   int resolve_table_column_expr(const ObQualifiedName &q_name, ObRawExpr *&real_ref_expr);
+  int check_ai_column_strict_read(const TableItem &table_item, const ColumnItem &col_item);
   int resolve_join_table_column_item(const JoinedTable &joined_table,
                                      const common::ObString &column_name,
                                      ObRawExpr *&real_ref_expr);

@@ -43,6 +43,10 @@
 #include "sql/resolver/dcl/ob_dcl_resolver.h"
 #include "sql/resolver/ddl/ob_ddl_resolver.h"
 #include "sql/hybrid_search/ob_hybrid_search_executor.h"
+#include "share/ob_server_struct.h"
+#include "common/mysqlclient/ob_mysql_proxy.h"
+#include "common/mysqlclient/ob_mysql_result.h"
+#include "lib/string/ob_sql_string.h"
 
 namespace oceanbase
 {
@@ -3034,6 +3038,7 @@ int ObDMLResolver::resolve_table_column_expr(const ObQualifiedName &q_name, ObRa
       if (OB_FAIL(resolve_single_table_column_item(*table_item, q_name.col_name_, false, col_item))) {
       } else if (OB_ISNULL(col_item)) {
         ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(check_ai_column_strict_read(*table_item, *col_item))) {
       } else {
         real_ref_expr = col_item->expr_;
       }
@@ -12798,6 +12803,89 @@ int ObDMLResolver::check_need_fill_embedded_vec_expr_param(const ObDMLStmt &stmt
         ret = OB_ERR_UNEXPECTED;
       } else if (session_info_->get_ddl_info().is_ddl()) {
         need_fill = false;
+      }
+    }
+  }
+  return ret;
+}
+
+
+// AI column strict read: when ai_column_strict_read is enabled, a statement that
+// references an AI column is rejected while any row of that column is still NULL.
+// The check is column wide, not limited to the rows the statement touches.
+namespace ai_strict_read_internal {
+static thread_local bool g_ai_strict_read_checking = false;
+
+class ObAiStrictReadGuard
+{
+public:
+  ObAiStrictReadGuard() : prev_(g_ai_strict_read_checking) { g_ai_strict_read_checking = true; }
+  ~ObAiStrictReadGuard() { g_ai_strict_read_checking = prev_; }
+private:
+  bool prev_;
+};
+} // namespace ai_strict_read_internal
+
+int ObDMLResolver::check_ai_column_strict_read(const TableItem &table_item,
+                                               const ColumnItem &col_item)
+{
+  int ret = OB_SUCCESS;
+  bool strict_read = false;
+  const ObTableSchema *table_schema = NULL;
+  const ObDatabaseSchema *database_schema = NULL;
+  using namespace ai_strict_read_internal;
+  if (OB_ISNULL(session_info_) || OB_ISNULL(schema_checker_)) {
+    ret = OB_NOT_INIT;
+  } else if (g_ai_strict_read_checking) {
+    // nested inner sql issued by this check itself
+  } else if (!table_item.is_basic_table()) {
+  } else if (OB_FAIL(session_info_->get_sys_variable(share::SYS_VAR_AI_COLUMN_STRICT_READ,
+                                                     strict_read))) {
+  } else if (!strict_read) {
+  } else if (OB_FAIL(schema_checker_->get_table_schema(table_item.ref_id_, table_schema))) {
+  } else if (OB_ISNULL(table_schema)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (table_schema->get_ai_column_infos().count() <= 0) {
+  } else {
+    const ObIArray<ObAiColumnInfo> &ai_infos = table_schema->get_ai_column_infos();
+    const ObAiColumnInfo *ai_info = NULL;
+    for (int64_t i = 0; NULL == ai_info && i < ai_infos.count(); ++i) {
+      if (col_item.column_id_ == ai_infos.at(i).column_id_) {
+        ai_info = &ai_infos.at(i);
+      }
+    }
+    if (NULL != ai_info) {
+      ObAiStrictReadGuard guard;
+      ObSqlString sql;
+      ObMySQLProxy::MySQLResult res;
+      common::sqlclient::ObMySQLResult *result = NULL;
+      int64_t null_count = 0;
+      if (OB_ISNULL(GCTX.sql_proxy_)) {
+        ret = OB_NOT_INIT;
+      } else if (OB_FAIL(schema_checker_->get_database_schema(table_schema->get_database_id(),
+                                                              database_schema))) {
+      } else if (OB_ISNULL(database_schema)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(sql.append_fmt("select count(*) from `%.*s`.`%.*s` where `%.*s` is null",
+                                        static_cast<int>(database_schema->get_database_name_str().length()),
+                                        database_schema->get_database_name_str().ptr(),
+                                        static_cast<int>(table_schema->get_table_name_str().length()),
+                                        table_schema->get_table_name_str().ptr(),
+                                        static_cast<int>(ai_info->column_name_.length()),
+                                        ai_info->column_name_.ptr()))) {
+      } else if (OB_FAIL(GCTX.sql_proxy_->read(res, sql.ptr(), nullptr))) {
+        LOG_WARN("failed to check ai column null rows", K(ret), KCSTRING(sql.ptr()));
+      } else if (OB_ISNULL(result = res.get_result())) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(result->next())) {
+        LOG_WARN("failed to read ai column null count", K(ret));
+      } else if (OB_FAIL(result->get_int(static_cast<int64_t>(0), null_count))) {
+        LOG_WARN("failed to get ai column null count", K(ret));
+      } else if (null_count > 0) {
+        ret = OB_ERR_AI_COLUMN_UNFINISHED_TASKS;
+        LOG_USER_ERROR(OB_ERR_AI_COLUMN_UNFINISHED_TASKS,
+                       static_cast<unsigned long>(table_item.ref_id_),
+                       static_cast<unsigned long>(col_item.column_id_));
       }
     }
   }

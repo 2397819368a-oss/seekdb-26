@@ -74,6 +74,10 @@ protected:
                                      const ObStmtScope scope);
   int generate_wrapper_expr_for_assignemnts(common::ObIArray<ObAssignment> &assigns,
                                             bool has_before_trigger);
+  int invalidate_ai_column_assignments(common::ObIArray<ObTableAssignment> &assigns,
+                                       ObTableAssignment &table_assign,
+                                       const ObTableSchema *table_schema,
+                                       const TableItem *table_item);
 
   virtual int add_assignment(common::ObIArray<ObTableAssignment> &table_assigns,
                              const TableItem *table_item,

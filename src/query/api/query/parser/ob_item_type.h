@@ -1979,6 +1979,8 @@ typedef enum ObItemType
   T_SINGLE_INSERT = 4477,//used to support multi table insert
 
   T_GENERATED_COLUMN = 4478,
+  T_AI_COLUMN = 4480,
+  T_AI_COLUMN_RETRY = 4522,
   T_CONSTR_ALWAYS = 4479,
   T_METHOD_OPT = 4481,
   T_METHOD_OPT_LIST = 4482,

@@ -19,6 +19,7 @@
 #include "common/ob_timeout_ctx.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
 #include "share/ob_server_struct.h"
+#include "common/mysqlclient/ob_mysql_proxy.h"
 #include "sql/engine/cmd/ob_table_executor.h"
 #include "query/command/ob_root_command_service.h"
 #include "query/command/ob_root_service_serialization.h"
@@ -762,6 +763,24 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
   OV (OB_NOT_NULL(task_exec_ctx = GET_SQL_EXECUTOR_CTX(ctx)), OB_NOT_INIT);
   if (OB_FAIL(ret)) {
     // do nothing
+  } else if (alter_table_arg.is_retry_ai_column_) {
+    int64_t affected_rows = 0;
+    if (OB_ISNULL(GCTX.sql_proxy_)) {
+      ret = OB_NOT_INIT;
+      SQL_ENG_LOG(WARN, "sql proxy is null", K(ret));
+    } else if (OB_FAIL(GCTX.sql_proxy_->write(alter_table_arg.retry_ai_column_purge_sql_,
+                                               affected_rows))) {
+      SQL_ENG_LOG(WARN, "failed to purge ai column retry tasks", K(ret),
+                  K(alter_table_arg.retry_ai_column_purge_sql_));
+    } else if (OB_FAIL(GCTX.sql_proxy_->write(alter_table_arg.retry_ai_column_enqueue_sql_,
+                                              affected_rows))) {
+      SQL_ENG_LOG(WARN, "failed to enqueue ai column retry tasks", K(ret),
+                  K(alter_table_arg.retry_ai_column_enqueue_sql_));
+    } else if (OB_FAIL(GCTX.sql_proxy_->write(alter_table_arg.retry_ai_column_sql_,
+                                               affected_rows))) {
+      SQL_ENG_LOG(WARN, "failed to execute ai column retry", K(ret),
+                  K(alter_table_arg.retry_ai_column_sql_));
+    }
   } else if (stmt.is_alter_triggers()) {
     if (stmt.get_tg_arg().trigger_infos_.count() > 0) {
       stmt.get_tg_arg().ddl_stmt_str_ = first_stmt;

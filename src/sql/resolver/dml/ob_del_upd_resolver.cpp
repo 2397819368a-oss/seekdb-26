@@ -481,6 +481,117 @@ int ObDelUpdResolver::check_update_vector_col_with_vector_index(const ObTableSch
   return ret;
 }
 
+
+// ---------- ai column helpers (seekdb ai column) ----------
+static bool ai_column_is_ident_char(const char c)
+{
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+         || (c >= '0' && c <= '9') || '_' == c;
+}
+
+// whether the normalized ai column expression text references the given column name
+static bool ai_expr_references_column(const ObString &expr_text, const ObString &column_name)
+{
+  bool found = false;
+  const int64_t name_len = column_name.length();
+  if (name_len <= 0 || expr_text.length() < name_len) {
+    return false;
+  }
+  for (int64_t i = 0; !found && i + name_len <= expr_text.length(); ++i) {
+    int64_t j = 0;
+    for (; j < name_len; ++j) {
+      if (expr_text.ptr()[i + j] != column_name.ptr()[j]) {
+        break;
+      }
+    }
+    if (j == name_len) {
+      const bool left_ok = (i == 0) || !ai_column_is_ident_char(expr_text.ptr()[i - 1]);
+      const bool right_ok = (i + name_len >= expr_text.length())
+                            || !ai_column_is_ident_char(expr_text.ptr()[i + name_len]);
+      found = left_ok && right_ok;
+    }
+  }
+  return found;
+}
+// ---------- end ai column helpers ----------
+
+// ai column invalidation: any change of the dependency columns (or rowkey)
+// invalidates the generated result so that a new task can be scheduled.
+// This runs before the vector index maintenance check so that an ai vector
+// column backed by a vector index also updates its hidden vid columns.
+int ObDelUpdResolver::invalidate_ai_column_assignments(
+    common::ObIArray<ObTableAssignment> &assigns,
+    ObTableAssignment &table_assign,
+    const ObTableSchema *table_schema,
+    const TableItem *table_item)
+{
+  int ret = OB_SUCCESS;
+  ObDMLStmt *stmt = get_stmt();
+  if (OB_ISNULL(stmt)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("stmt is null", K(ret));
+  }
+      // ai column invalidation: any change of the dependency columns (or rowkey)
+      // invalidates the generated result so that a new task can be scheduled.
+      if (OB_SUCC(ret) && table_schema->get_ai_column_infos().count() > 0) {
+        const ObIArray<ObAiColumnInfo> &ai_infos = table_schema->get_ai_column_infos();
+        for (int64_t ai_idx = 0; OB_SUCC(ret) && ai_idx < ai_infos.count(); ++ai_idx) {
+          const ObAiColumnInfo &ai_info = ai_infos.at(ai_idx);
+          const ObColumnSchemaV2 *ai_column = table_schema->get_column_schema(ai_info.column_id_);
+          bool need_invalidate = false;
+          bool assigned_by_user = false;
+          for (int64_t k = 0; OB_SUCC(ret) && k < table_assign.assignments_.count(); ++k) {
+            const ObAssignment &assign = table_assign.assignments_.at(k);
+            if (NULL == assign.column_expr_) {
+              continue;
+            } else if (assign.is_implicit_) {
+              continue;
+            } else if (assign.column_expr_->get_column_id() == ai_info.column_id_) {
+              assigned_by_user = true;
+              continue;
+            }
+            const ObColumnSchemaV2 *changed_column =
+                table_schema->get_column_schema(assign.column_expr_->get_column_id());
+            if (NULL == changed_column) {
+              continue;
+            } else if (changed_column->is_rowkey_column()) {
+              need_invalidate = true;
+            } else if (ai_expr_references_column(ai_info.normalized_expr_,
+                                                 changed_column->get_column_name_str())) {
+              need_invalidate = true;
+            }
+          }
+          if (OB_SUCC(ret) && need_invalidate && !assigned_by_user && NULL != ai_column) {
+            ObAssignment ai_assign;
+            ObSEArray<ObColumnRefRawExpr *, 1> ai_col_exprs;
+            ColumnItem *ai_col_item = NULL;
+            ObRawExpr *null_expr = NULL;
+            if (OB_FAIL(add_column_to_stmt(*table_item, *ai_column, ai_col_exprs))) {
+            } else if (ai_col_exprs.empty()) {
+              ret = OB_ERR_UNEXPECTED;
+            } else if (OB_ISNULL(ai_col_item = stmt->get_column_item_by_id(
+                table_item->table_id_, ai_col_exprs.at(0)->get_column_id()))) {
+              ret = OB_ERR_UNEXPECTED;
+            } else if (OB_FAIL(ObRawExprUtils::build_null_expr(*params_.expr_factory_, null_expr))) {
+            } else if (OB_ISNULL(null_expr)) {
+              ret = OB_ERR_UNEXPECTED;
+            } else {
+              ai_assign.column_expr_ = ai_col_item->expr_;
+              ai_assign.expr_ = null_expr;
+              ai_assign.is_implicit_ = true;
+              if (OB_FAIL(add_assignment(assigns, table_item, ai_col_item, ai_assign))) {
+                LOG_WARN("failed to add ai column invalidate assignment", KR(ret), K(ai_info.column_name_));
+              } else {
+                LOG_INFO("ai column invalidated by update", K(ai_info.column_name_),
+                         K(ai_column->get_column_name()));
+              }
+            }
+          }
+        }
+      }
+  return ret;
+}
+
 int ObDelUpdResolver::resolve_additional_assignments(ObIArray<ObTableAssignment> &assigns,
                                                      const ObStmtScope scope)
 {
@@ -513,6 +624,11 @@ int ObDelUpdResolver::resolve_additional_assignments(ObIArray<ObTableAssignment>
       LOG_WARN("fail to get table schema", KPC(table_item), K(table_schema));
     } else if (OB_FAIL(table_schema->has_before_update_row_trigger(*schema_guard, trigger_exist))) {
     } else if (OB_FAIL(generate_wrapper_expr_for_assignemnts(assigns.at(i).assignments_, trigger_exist))) {
+    } else if (T_UPDATE_SCOPE == scope
+               && OB_FAIL(invalidate_ai_column_assignments(assigns,
+                                                          assigns.at(i),
+                                                          table_schema,
+                                                          table_item))) {
     } else if (OB_FAIL(check_update_vector_col_with_vector_index(table_schema,
                                                                  schema_guard,
                                                                  assigns.at(i).assignments_,
@@ -614,7 +730,6 @@ int ObDelUpdResolver::resolve_additional_assignments(ObIArray<ObTableAssignment>
       } else if (OB_FAIL(check_heap_table_update(assigns.at(i)))) {
       }
     } else if (OB_SUCC(ret)) {
-      // for UPDATE
       if (OB_FAIL(check_heap_table_update(assigns.at(i)))) {
       }
     }

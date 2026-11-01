@@ -50,6 +50,12 @@ public:
   virtual ~ObAlterTableResolver();
   virtual int resolve(const ParseNode &parse_tree);
   int resolve_action_list(const ParseNode &node);
+  int resolve_ai_column_retry(const ParseNode &action_list,
+                              obcall::ObAlterTableArg &alter_table_arg,
+                              bool &is_retry_ai_column);
+  int build_ai_column_retry_sql(const share::schema::ObAiColumnInfo &ai_info,
+                                const ParseNode *where_node,
+                                obcall::ObAlterTableArg &alter_table_arg);
   int resolve_column_options(const ParseNode &node,
                              bool &is_modify_column_visibility,
                              bool &is_drop_column,
@@ -67,6 +73,10 @@ public:
   int resolve_convert_to_character(const ParseNode &node);
   int resolve_foreign_key_options(const ParseNode &node);
   int resolve_add_column(const ParseNode &node, ObColumnNameSet &resolve_add_column);
+  int resolve_ai_column_for_alter(const ParseNode *element,
+                                  const share::schema::ObColumnSchemaV2 &column,
+                                  const ParseNode *ai_node,
+                                  ObAlterTableStmt *alter_table_stmt);
   int resolve_alter_column(const ParseNode &node);
   int resolve_change_column(const ParseNode &node);
   int check_modify_column_allowed(const share::schema::AlterColumnSchema &alter_column_schema,
