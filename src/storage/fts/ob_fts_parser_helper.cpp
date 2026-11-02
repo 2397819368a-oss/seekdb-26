@@ -334,15 +334,33 @@ int ObFTParseHelper::init(
     ret = OB_INIT_TWICE;
   } else if (OB_ISNULL(allocator) || OB_UNLIKELY(parser_name.empty())) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (OB_FAIL(parser_name_.parse_from_str(parser_name.ptr(), parser_name.length()))) {
-  } else if (OB_FAIL(parser_property_.parse_for_parser_helper(parser_name_, parser_properties))) {
-  } else if (OB_FAIL(parser_name_.get_desc(parser_desc_))) {
-  } else if (OB_ISNULL(parser_desc_)) {
-    ret = OB_ERR_UNEXPECTED;
-  } else if (OB_FAIL(set_add_word_flag(*parser_desc_))) {
   } else {
-    allocator_ = allocator;
-    is_inited_ = true;
+    // Consult process-level cache first — skips re-parsing JSON properties.
+    ObFTParseHelperCache::CachedInitResult cached;
+    if (OB_SUCC(ObFTParseHelperCache::lookup(parser_name, parser_properties, cached))) {
+      parser_name_      = cached.parser_name;
+      parser_property_  = cached.parser_property;
+      parser_desc_      = cached.parser_desc;
+      add_word_flag_    = cached.add_word_flag;
+      allocator_        = allocator;
+      is_inited_        = true;
+    } else if (OB_FAIL(parser_name_.parse_from_str(parser_name.ptr(), parser_name.length()))) {
+    } else if (OB_FAIL(parser_property_.parse_for_parser_helper(parser_name_, parser_properties))) {
+    } else if (OB_FAIL(parser_name_.get_desc(parser_desc_))) {
+    } else if (OB_ISNULL(parser_desc_)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(set_add_word_flag(*parser_desc_))) {
+    } else {
+      allocator_ = allocator;
+      is_inited_ = true;
+      // best-effort store for future calls
+      ObFTParseHelperCache::CachedInitResult result;
+      result.parser_name     = parser_name_;
+      result.parser_property = parser_property_;
+      result.parser_desc     = parser_desc_;
+      result.add_word_flag   = add_word_flag_;
+      ObFTParseHelperCache::store(parser_name, parser_properties, result);
+    }
   }
   if (OB_FAIL(ret) && OB_UNLIKELY(!is_inited_)) {
     reset();
@@ -509,6 +527,158 @@ int ObFTParseHelper::set_add_word_flag(const ObIFTParserDesc &ftparser_desc)
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(ftparser_desc.get_add_word_flag(add_word_flag_))) {
+  }
+  return ret;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// ObFTParseHelperCache
+
+ObFTParseHelperCache *ObFTParseHelperCache::instance_ = nullptr;
+
+int ObFTParseHelperCache::init_global()
+{
+  int ret = OB_SUCCESS;
+  if (OB_NOT_NULL(instance_)) {
+    // idempotent
+  } else if (OB_ISNULL(instance_ = OB_NEW(ObFTParseHelperCache, MEMORY_LABEL))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else if (OB_FAIL(instance_->init_())) {
+    OB_DELETE(ObFTParseHelperCache, MEMORY_LABEL, instance_);
+    instance_ = nullptr;
+  }
+  return ret;
+}
+
+void ObFTParseHelperCache::deinit_global()
+{
+  if (OB_NOT_NULL(instance_)) {
+    instance_->destroy_();
+    OB_DELETE(ObFTParseHelperCache, MEMORY_LABEL, instance_);
+    instance_ = nullptr;
+  }
+}
+
+int ObFTParseHelperCache::init_()
+{
+  int ret = OB_SUCCESS;
+  lib::ObMemAttr mem_attr;
+  mem_attr.label_ = MEMORY_LABEL;
+  next_slot_idx_ = 0;
+  for (int64_t i = 0; i < MAX_SLOTS; ++i) {
+    slots_[i].inited = false;
+    slots_[i].parser_name_buf = nullptr;
+    slots_[i].parser_name_len = 0;
+    slots_[i].parser_properties_buf = nullptr;
+    slots_[i].parser_properties_len = 0;
+  }
+  if (OB_FAIL(cache_allocator_.init(lib::ObMallocAllocator::get_instance(),
+                                    OB_MALLOC_NORMAL_BLOCK_SIZE,
+                                    mem_attr))) {
+  } else {
+    is_inited_ = true;
+  }
+  return ret;
+}
+
+void ObFTParseHelperCache::destroy_()
+{
+  for (int64_t i = 0; i < MAX_SLOTS; ++i) {
+    slots_[i].inited = false;
+  }
+  cache_allocator_.reset();
+  is_inited_ = false;
+}
+
+bool ObFTParseHelperCache::key_match_(const Slot &slot,
+                                      const common::ObString &parser_name,
+                                      const common::ObString &parser_properties)
+{
+  bool match = false;
+  if (slot.inited
+      && slot.parser_name_len == parser_name.length()
+      && slot.parser_properties_len == parser_properties.length()) {
+    match = (0 == MEMCMP(slot.parser_name_buf, parser_name.ptr(), parser_name.length()))
+         && (0 == MEMCMP(slot.parser_properties_buf, parser_properties.ptr(), parser_properties.length()));
+  }
+  return match;
+}
+
+int ObFTParseHelperCache::lookup(const common::ObString &parser_name,
+                                 const common::ObString &parser_properties,
+                                 CachedInitResult &out)
+{
+  int ret = OB_ENTRY_NOT_EXIST;
+  if (OB_NOT_NULL(instance_) && instance_->is_inited_) {
+    ret = instance_->lookup_(parser_name, parser_properties, out);
+  }
+  return ret;
+}
+
+int ObFTParseHelperCache::store(const common::ObString &parser_name,
+                                const common::ObString &parser_properties,
+                                const CachedInitResult &result)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(instance_) || !instance_->is_inited_) {
+    // cache not ready — silently skip
+  } else {
+    ret = instance_->store_(parser_name, parser_properties, result);
+  }
+  return ret;
+}
+
+int ObFTParseHelperCache::lookup_(const common::ObString &parser_name,
+                                  const common::ObString &parser_properties,
+                                  CachedInitResult &out)
+{
+  for (int64_t i = 0; i < MAX_SLOTS; ++i) {
+    if (key_match_(slots_[i], parser_name, parser_properties)) {
+      out = slots_[i].result;
+      return OB_SUCCESS;
+    }
+  }
+  return OB_ENTRY_NOT_EXIST;
+}
+
+int ObFTParseHelperCache::store_(const common::ObString &parser_name,
+                                 const common::ObString &parser_properties,
+                                 const CachedInitResult &result)
+{
+  int ret = OB_SUCCESS;
+
+  // update in-place if key already exists
+  for (int64_t i = 0; i < MAX_SLOTS; ++i) {
+    if (key_match_(slots_[i], parser_name, parser_properties)) {
+      slots_[i].result = result;
+      return OB_SUCCESS;
+    }
+  }
+
+  // pick victim slot via round-robin
+  Slot &slot = slots_[next_slot_idx_];
+  next_slot_idx_ = (next_slot_idx_ + 1) % MAX_SLOTS;
+
+  const int64_t name_len = parser_name.length();
+  const int64_t prop_len = parser_properties.length();
+  char *name_buf = nullptr;
+  char *prop_buf = nullptr;
+  if (OB_ISNULL(name_buf = static_cast<char *>(cache_allocator_.alloc(name_len)))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else {
+    MEMCPY(name_buf, parser_name.ptr(), name_len);
+    slot.parser_name_buf = name_buf;
+    slot.parser_name_len = name_len;
+
+    if (OB_ISNULL(prop_buf = static_cast<char *>(cache_allocator_.alloc(prop_len)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else {
+      MEMCPY(prop_buf, parser_properties.ptr(), prop_len);
+      slot.parser_properties_buf = prop_buf;
+      slot.parser_properties_len = prop_len;
+      slot.result = result;
+      slot.inited = true;
+    }
   }
   return ret;
 }

@@ -2147,6 +2147,7 @@ int ObServer::init_fts()
   int ret = sql::install_legacy_das_text_retrieval_engine();
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(ObFTParseData::init_global())) {
+  } else if (OB_FAIL(storage::ObFTParseHelperCache::init_global())) {
   } else {
     LOG_INFO("fulltext parser data initialized");
   }
@@ -2156,6 +2157,7 @@ int ObServer::init_fts()
 void ObServer::deinit_fts()
 {
   ObFTParseData::deinit_global();
+  storage::ObFTParseHelperCache::deinit_global();
   LOG_INFO("fulltext parser data deinitialized");
 }
 

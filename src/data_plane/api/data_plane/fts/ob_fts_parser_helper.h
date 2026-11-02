@@ -235,6 +235,87 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObFTParseHelper);
 };
 
+/**
+ * Process-level ObFTParseHelper init-result cache.
+ *
+ * Caches the *result* of ObFTParseHelper::init() — i.e. the parsed
+ * parser_property_ (value), parser_desc_ ptr (static), add_word_flag_
+ * (value), and parser_name_ (value) — keyed by (parser_name_str,
+ * parser_properties_str).
+ *
+ * ObFTParseHelper::init() consults this cache first; on hit it copies the
+ * pre-parsed fields and skips the expensive JSON parse_for_parser_helper().
+ * On miss it does the full init and stores the result.
+ *
+ * Motivation: FTS build path (ADD FULLTEXT INDEX + DML iterator rewind)
+ * calls init() many times with identical parser configs — the repeated
+ * JSON parsing is pure waste.
+ *
+ * Thread-safety: OceanBase observer is single-threaded per worker; no lock.
+ */
+class ObFTParseHelperCache final
+{
+public:
+  static constexpr int64_t MAX_SLOTS = 8;
+
+  /** The cached init result — all value-semantic, no allocator deps. */
+  struct CachedInitResult
+  {
+    const ObIFTParserDesc *parser_desc;
+    ObFTParserProperty     parser_property;
+    ObAddWordFlag          add_word_flag;
+    ObFTParser             parser_name;
+  };
+
+  /** OB_SUCCESS on hit, OB_ENTRY_NOT_EXIST on miss. */
+  static int lookup(const common::ObString &parser_name,
+                    const common::ObString &parser_properties,
+                    CachedInitResult &out);
+
+  /** Best-effort store — failures silently ignored. */
+  static int store(const common::ObString &parser_name,
+                   const common::ObString &parser_properties,
+                   const CachedInitResult &result);
+
+  static int init_global();
+  static void deinit_global();
+
+private:
+  struct Slot
+  {
+    bool                      inited;
+    char                     *parser_name_buf;
+    int64_t                   parser_name_len;
+    char                     *parser_properties_buf;
+    int64_t                   parser_properties_len;
+    CachedInitResult          result;
+  };
+
+  ObFTParseHelperCache() = default;
+  ~ObFTParseHelperCache() = default;
+
+  int init_();
+  void destroy_();
+  int lookup_(const common::ObString &parser_name,
+              const common::ObString &parser_properties,
+              CachedInitResult &out);
+  int store_(const common::ObString &parser_name,
+             const common::ObString &parser_properties,
+             const CachedInitResult &result);
+  static bool key_match_(const Slot &slot,
+                         const common::ObString &parser_name,
+                         const common::ObString &parser_properties);
+
+private:
+  common::ObFIFOAllocator cache_allocator_;
+  Slot slots_[MAX_SLOTS];
+  int64_t next_slot_idx_;
+  bool is_inited_;
+
+  static ObFTParseHelperCache *instance_;
+  static constexpr const char *MEMORY_LABEL = "FTHelperCache";
+};
+
 } // end namespace storage
 } // end namespace oceanbase
 
