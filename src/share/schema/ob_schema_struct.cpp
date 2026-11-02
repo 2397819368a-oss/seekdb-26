@@ -7784,6 +7784,23 @@ bool check_can_drop_column_instant()
 }
 
 //
+// Serialization for AI column definition (declared with OB_UNIS_VERSION(1)
+// in ob_schema_struct.h; required by ObTableSchema::ai_column_infos_).
+OB_SERIALIZE_MEMBER(ObAiColumnInfo,
+                    table_id_,
+                    column_name_,
+                    column_id_,
+                    state_column_id_,
+                    request_column_id_,
+                    result_spec_column_id_,
+                    max_retries_,
+                    ai_model_name_,
+                    ai_type_,
+                    sync_mode_,
+                    result_dim_,
+                    normalized_expr_);
+
+//
 //
 } //namespace schema
 } //namespace share
