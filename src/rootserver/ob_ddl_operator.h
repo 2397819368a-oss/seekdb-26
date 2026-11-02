@@ -190,6 +190,8 @@ public:
   int insert_single_column(common::ObMySQLTransaction &trans,
                            const share::schema::ObTableSchema &new_table_schema,
                            share::schema::ObColumnSchemaV2 &new_column) override;
+  int insert_ai_columns(common::ObMySQLTransaction &trans,
+                        const share::schema::ObTableSchema &table_schema);
   int delete_single_column(common::ObMySQLTransaction &trans,
                            const int64_t new_schema_version,
                            share::schema::ObTableSchema &new_table_schema,

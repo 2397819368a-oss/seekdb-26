@@ -753,6 +753,9 @@ public:
                                  const common::ObString &constraint_name);
   int set_simple_constraint_info_array(const common::ObIArray<ObSimpleConstraintInfo> &simple_cst_info_array);
   inline const common::ObIArray<ObSimpleConstraintInfo> &get_simple_constraint_info_array() const { return simple_constraint_info_array_; }
+  inline common::ObIArray<ObAiColumnInfo> &get_ai_column_infos() { return ai_column_infos_; }
+  inline const common::ObIArray<ObAiColumnInfo> &get_ai_column_infos() const { return ai_column_infos_; }
+  inline int add_ai_column_info(const ObAiColumnInfo &info) { return ai_column_infos_.push_back(info); }
   // only index table schema can invoke this function
   int get_index_name(common::ObString &index_name) const;
   template <typename Allocator>
@@ -921,6 +924,7 @@ protected:
   ObIndexType index_type_;
   common::ObArray<ObSimpleForeignKeyInfo> simple_foreign_key_info_array_;
   common::ObArray<ObSimpleConstraintInfo> simple_constraint_info_array_;
+  common::ObArray<ObAiColumnInfo> ai_column_infos_;
   // Original index name without prefix (__idx_<table_id>_).
   common::ObString origin_index_name_;
   int64_t truncate_version_;

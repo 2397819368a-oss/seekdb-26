@@ -1441,6 +1441,21 @@ int ObDDLOperator::alter_table_alter_index(
 // @param [in] trans
 //
 // @return oceanbase error code defined in lib/ob_errno.def
+int ObDDLOperator::insert_ai_columns(ObMySQLTransaction &trans, const ObTableSchema &table_schema)
+{
+  int ret = OB_SUCCESS;
+  ObSchemaService *schema_service_impl = schema_service_.get_schema_service();
+  ObTableSqlService *table_sql_service = NULL;
+  if (OB_ISNULL(schema_service_impl)) {
+    ret = OB_ERR_SYS;
+    LOG_ERROR("schema_service_impl must not null", K(ret));
+  } else if (FALSE_IT(table_sql_service = &schema_service_impl->get_table_sql_service())) {
+  } else if (OB_FAIL(table_sql_service->add_ai_columns_for_alter(trans, table_schema))) {
+    LOG_WARN("add ai columns for alter failed", KR(ret), K(table_schema.get_table_id()));
+  }
+  return ret;
+}
+
 int ObDDLOperator::alter_table_drop_foreign_key(const ObTableSchema &table_schema,
                                                 const ObDropForeignKeyArg &drop_foreign_key_arg,
                                                 ObMySQLTransaction &trans,

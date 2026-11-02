@@ -41,6 +41,7 @@ public:
                 ObEvalCtx &eval_ctx,
                 ObChunkDatumStore::StoredRow *&stored_row);
   int64_t get_row_cnt() const { return write_buffer_.get_row_cnt(); }
+  ObDASWriteBuffer &get_update_buffer() { return write_buffer_; }
   void set_das_ctdef(const ObDASUpdCtDef *upd_ctdef) { upd_ctdef_ = upd_ctdef; }
   void set_das_rtdef(ObDASUpdRtDef *upd_rtdef) { upd_rtdef_ = upd_rtdef; }
   virtual int dump_data() const override

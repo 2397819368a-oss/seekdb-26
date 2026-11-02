@@ -5838,6 +5838,53 @@ public:
   uint64_t constraint_id_;
 };
 
+struct ObAiColumnInfo
+{
+  OB_UNIS_VERSION(1);
+public:
+  ObAiColumnInfo() { reset(); }
+  void reset()
+  {
+    table_id_ = common::OB_INVALID_ID;
+    column_id_ = common::OB_INVALID_ID;
+    state_column_id_ = common::OB_INVALID_ID;
+    request_column_id_ = common::OB_INVALID_ID;
+    result_spec_column_id_ = common::OB_INVALID_ID;
+    max_retries_ = 0;
+    ai_type_ = 0;
+    sync_mode_ = 0;
+    result_dim_ = 0;
+    column_name_.assign_ptr("", 0);
+    ai_model_name_.assign_ptr("", 0);
+    normalized_expr_.assign_ptr("", 0);
+  }
+  int64_t get_convert_size() const
+  {
+    int64_t sz = sizeof(*this);
+    sz += column_name_.length() + 1;
+    sz += ai_model_name_.length() + 1;
+    sz += normalized_expr_.length() + 1;
+    return sz;
+  }
+  TO_STRING_KV(K_(table_id), K_(column_name), K_(column_id),
+               K_(state_column_id), K_(request_column_id), K_(result_spec_column_id),
+               K_(max_retries), K_(ai_model_name), K_(ai_type), K_(sync_mode),
+               K_(result_dim), K_(normalized_expr));
+
+  uint64_t table_id_;
+  common::ObString column_name_;
+  uint64_t column_id_;
+  uint64_t state_column_id_;
+  uint64_t request_column_id_;
+  uint64_t result_spec_column_id_;
+  int64_t max_retries_;
+  common::ObString ai_model_name_;
+  int64_t ai_type_;
+  int64_t sync_mode_;
+  int64_t result_dim_;
+  common::ObString normalized_expr_;
+};
+
 #define ASSIGN_PARTITION_ERROR(ERROR_STRING, USER_ERROR) { \
   if (OB_SUCC(ret)) {\
     if (OB_NOT_NULL(ERROR_STRING)) { \

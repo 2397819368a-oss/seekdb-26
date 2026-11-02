@@ -251,6 +251,7 @@ public:
 
   ObDMLModifyRowsList& get_dml_modify_row_list() { return dml_modify_rows_;}
   int submit_all_dml_task();
+  int record_ai_column_tasks();
 
   int perform_batch_fk_check();
 protected:

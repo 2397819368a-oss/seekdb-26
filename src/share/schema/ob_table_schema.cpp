@@ -1315,6 +1315,20 @@ int ObTableSchema::assign(const ObTableSchema &src_schema)
         if (OB_FAIL(set_simple_index_infos(src_schema.get_simple_index_infos()))) {
         }
       }
+      if (OB_SUCC(ret)) {
+        ai_column_infos_.reset();
+        const common::ObIArray<ObAiColumnInfo> &src_ai_infos = src_schema.get_ai_column_infos();
+        for (int64_t ai_idx = 0; OB_SUCC(ret) && ai_idx < src_ai_infos.count(); ++ai_idx) {
+          ObAiColumnInfo ai_info = src_ai_infos.at(ai_idx);
+          if (OB_FAIL(deep_copy_str(src_ai_infos.at(ai_idx).column_name_, ai_info.column_name_))) {
+          } else if (OB_FAIL(deep_copy_str(src_ai_infos.at(ai_idx).ai_model_name_,
+                                          ai_info.ai_model_name_))) {
+          } else if (OB_FAIL(deep_copy_str(src_ai_infos.at(ai_idx).normalized_expr_,
+                                          ai_info.normalized_expr_))) {
+          } else if (OB_FAIL(ai_column_infos_.push_back(ai_info))) {
+          }
+        }
+      }
     }
   }
 
@@ -5406,6 +5420,7 @@ OB_DEF_SERIALIZE(ObTableSchema)
   OB_UNIS_ENCODE(parser_properties_);
   OB_UNIS_ENCODE(semistruct_encoding_type_);
   OB_UNIS_ENCODE(micro_block_format_version_);
+  OB_UNIS_ENCODE(ai_column_infos_);
   // !!! end static check
   /*
    * Add deserialized members before this end static check comment
@@ -5609,6 +5624,7 @@ OB_DEF_DESERIALIZE(ObTableSchema)
   OB_UNIS_DECODE_AND_FUNC(parser_properties_, deep_copy_str);
   OB_UNIS_DECODE(semistruct_encoding_type_);
   OB_UNIS_DECODE(micro_block_format_version_);
+  OB_UNIS_DECODE(ai_column_infos_);
   // !!! end static check
   /*
    * Add deserialized members before this end static check comment
@@ -5719,6 +5735,7 @@ OB_DEF_SERIALIZE_SIZE(ObTableSchema)
   OB_UNIS_ADD_LEN(parser_properties_);
   OB_UNIS_ADD_LEN(semistruct_encoding_type_);
   OB_UNIS_ADD_LEN(micro_block_format_version_);
+  OB_UNIS_ADD_LEN(ai_column_infos_);
   // !!! end static check
   /*
    * Add deserialized members before this end static check comment

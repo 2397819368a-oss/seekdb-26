@@ -307,8 +307,9 @@ int ObTableCreator::add_create_tablets_of_tables_arg_(
     if (OB_SUCC(ret) && !is_sys_table(table_schema.get_table_id())) {
       int64_t start_time = ObTimeUtility::current_time();
       int64_t schema_version = table_schema.get_schema_version();
-      if (OB_FAIL(share::ObTabletToTableHistoryOperator::create_tablet_to_table_history(
-                         trans_, schema_version, pairs))) {
+      int tmp_ret = share::ObTabletToTableHistoryOperator::create_tablet_to_table_history(
+                         trans_, schema_version, pairs);
+      if (OB_FAIL(tmp_ret)) {
       }
       int64_t end_time = ObTimeUtility::current_time();
       LOG_INFO("finish create_tablet_to_table_history", KR(ret),

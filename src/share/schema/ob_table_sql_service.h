@@ -307,6 +307,9 @@ public:
       const ObTableSchema &table,
       const ObConstraint &cst);
 
+  int add_ai_columns_for_alter(common::ObISQLClient &sql_client,
+                               const ObTableSchema &table);
+
 private:
   // just modify __all_core_table/__all_table/__all_column/__all_table_history/__all_column_history/__all_ddl_operation
   int inner_create_sys_table(ObTableSchema &table,
@@ -369,6 +372,11 @@ private:
   int add_constraints(common::ObISQLClient &sql_client, const ObTableSchema &table);
   int add_constraints_for_not_core(common::ObISQLClient &sql_client, const ObTableSchema &table);
   int batch_add_constraints_for_create_table(common::ObISQLClient &sql_client, const ObIArray<ObTableSchema> &tables);
+  int add_ai_columns_dml(const ObTableSchema &table,
+                         share::ObDMLSqlSplicer &dml,
+                         int64_t &ai_column_count);
+  int batch_add_ai_columns_for_create_table(common::ObISQLClient &sql_client,
+                                            const ObIArray<ObTableSchema> &tables);
   int add_constraints_dml(const ObTableSchema &table,
       ObDMLSqlSplicer &cst_dml,
       ObDMLSqlSplicer &cst_col_dml,
