@@ -15,6 +15,9 @@
  */
 
 #define USING_LOG_PREFIX STORAGE_FTS
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include "ob_fts_index_builder_util.h"
 #include "lib/utility/utility.h"
 #include "ob_index_builder_util.h"
@@ -37,6 +40,53 @@ namespace share
 {
 namespace
 {
+// Number of CPUs this process can really use.  Containers usually expose the
+// host core count through get_cpu_num() while a cgroup CPU quota limits the
+// throughput that is actually available, so sizing DDL workers by host cores
+// can badly oversubscribe a quota-constrained build.
+int64_t get_available_cpu_num()
+{
+  int64_t cpu_num = common::get_cpu_num();
+  int64_t quota = 0;
+  int64_t period = 0;
+  FILE *fp = nullptr;
+  // cgroup v2: "<quota|max> <period>"
+  if (nullptr != (fp = fopen("/sys/fs/cgroup/cpu.max", "r"))) {
+    char quota_str[64] = {'\0'};
+    long long quota_period = 0;
+    if (2 == fscanf(fp, "%63s %lld", quota_str, &quota_period)
+        && 0 != strcmp(quota_str, "max")
+        && quota_period > 0) {
+      quota = strtoll(quota_str, nullptr, 10);
+      period = quota_period;
+    }
+    fclose(fp);
+    fp = nullptr;
+  }
+  // cgroup v1: quota and period live in separate files
+  if (quota <= 0 && nullptr != (fp = fopen("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "r"))) {
+    long long quota_value = 0;
+    if (1 == fscanf(fp, "%lld", &quota_value) && quota_value > 0) {
+      quota = quota_value;
+    }
+    fclose(fp);
+    fp = nullptr;
+  }
+  if (quota > 0 && period <= 0
+      && nullptr != (fp = fopen("/sys/fs/cgroup/cpu/cpu.cfs_period_us", "r"))) {
+    long long period_value = 0;
+    if (1 == fscanf(fp, "%lld", &period_value) && period_value > 0) {
+      period = period_value;
+    }
+    fclose(fp);
+  }
+  if (quota > 0 && period > 0) {
+    const int64_t quota_cpu_num = (quota + period - 1) / period;
+    cpu_num = MIN(cpu_num, MAX(quota_cpu_num, 1L));
+  }
+  return cpu_num;
+}
+
 bool get_function_args(const ObString &expr_string,
                        const ObString &func_name,
                        ObString &args)
@@ -1040,16 +1090,20 @@ int ObFtsIndexBuilderUtil::decide_parallelism(
   // FTS builds are CPU bound: the inner INSERT ... SELECT has to tokenize every
   // document and emit the inverted index rows. DDL DOP resolves to 1 on tables
   // without a parallel attribute, which leaves most worker threads idle.
-  // The three heavy aux tables (doc_rowkey / fts_index / doc_word) are built
-  // concurrently, so derive the DOP from the machine size instead of using a
-  // fixed value: roughly a quarter of the cores per task keeps the total close
-  // to the core count. An explicit larger hint from the user is still honored,
-  // but capped to avoid oversubscription.
-  static constexpr int64_t FTS_BUILD_MIN_PARALLELISM = 2;
-  static constexpr int64_t FTS_BUILD_MAX_PARALLELISM = 12;
+  // Use the CPU budget that is really available (cgroup quota included) to
+  // size the DOP; relying on the host core count alone oversubscribes
+  // quota-limited containers where the build then runs slower than with DOP 1.
+  static constexpr int64_t FTS_BUILD_MAX_PARALLELISM = 8;
+  const int64_t available_cpu_num = get_available_cpu_num();
   int64_t fts_build_parallelism =
-      MAX(FTS_BUILD_MIN_PARALLELISM,
-          MIN(common::get_cpu_num() / 4, FTS_BUILD_MAX_PARALLELISM));
+      MIN(MAX(available_cpu_num, 1L), FTS_BUILD_MAX_PARALLELISM);
+  const char *dop_override = getenv("SEEKDB_FTS_BUILD_DOP");
+  if (nullptr != dop_override) {
+    const int64_t override_dop = atoll(dop_override);
+    if (override_dop > 0) {
+      fts_build_parallelism = override_dop;
+    }
+  }
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(original_parallelism <= 0)) {
     ret = OB_INVALID_ARGUMENT;
