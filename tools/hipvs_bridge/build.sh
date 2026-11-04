@@ -20,6 +20,9 @@ OUTPUT=${1:-$SCRIPT_DIR/libseekdb_cuvs_bridge.so}
 
 mkdir -p "$(dirname "$OUTPUT")"
 
+# EXTRA_CFLAGS: 额外 -D 开关（例如 -DSEEKDB_CUVS_HAS_IVF_PQ_ALGO）。
+# 扫描脚本用它把"目标 hipVS 头文件里才存在的枚举常量"变成可选项，
+# 这样同一份 bridge 源码在没有这些常量的旧头文件上照样编得过。
 "$HIPCC" \
   -shared \
   -fPIC \
@@ -27,6 +30,7 @@ mkdir -p "$(dirname "$OUTPUT")"
   -D__HIP_PLATFORM_AMD__ \
   -I"$HIPVS_ROOT/include" \
   -I"$ROCM_ROOT/include" \
+  ${EXTRA_CFLAGS:-} \
   "$SCRIPT_DIR/seekdb_cuvs_bridge.c" \
   -L"$HIPVS_ROOT/lib" \
   -Wl,-soname,libseekdb_cuvs_bridge.so \
