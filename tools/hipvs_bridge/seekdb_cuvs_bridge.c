@@ -52,7 +52,7 @@
  * refers to, so they are the ones guaranteed to exist in the target header.
  * Anything else is guarded behind a compile-time macro.
  * ------------------------------------------------------------------------- */
-#define SK_DEF_NITER        50
+#define SK_DEF_NITER        40
 #define SK_DEF_GRAPH_DEGREE 96
 #define SK_DEF_INTERMEDIATE 96
 #define SK_DEF_SEARCH_WIDTH 4
