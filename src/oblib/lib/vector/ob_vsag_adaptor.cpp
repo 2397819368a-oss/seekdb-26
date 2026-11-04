@@ -31,6 +31,9 @@
 #include <cstdio>
 #include <cstring>
 #include <pthread.h>
+#ifdef __linux__
+#include <sys/mman.h>  // memfd_create: RAM-backed staging for CAGRA graph snapshots
+#endif
 #include "vsag/vsag.h"
 #include "vsag/errors.h"
 #include "vsag/dataset.h"
@@ -322,10 +325,18 @@ static bool ob_cuvs_try_search(void *key, vsag::Allocator *alloc,
 
 static const char OB_CUVS_SNAPSHOT_MAGIC[8] = {'O', 'B', 'C', 'U', 'V', 'S', '0', '2'};
 struct ObCuvsSnapshotFile {
-  FILE *file_ = ::tmpfile();
+  FILE *file_ = nullptr;
   char path_[64] = {};
   ObCuvsSnapshotFile() {
+#ifdef __linux__
+    // Stage the CAGRA graph in RAM (memfd) instead of a disk-backed tmpfile:
+    // the graph is hundreds of MB and this staging sits on the timed DDL path.
+    const int fd = ::memfd_create("ob_cuvs_graph", 0);
+    if (fd >= 0) { file_ = ::fdopen(fd, "w+"); }
+#endif
+    if (file_ == nullptr) { file_ = ::tmpfile(); }
     if (file_ != nullptr) {
+      ::setvbuf(file_, nullptr, _IOFBF, 4 * 1024 * 1024);
       ::snprintf(path_, sizeof(path_), "/proc/self/fd/%d", ::fileno(file_));
     }
   }
@@ -429,7 +440,7 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
     LOG_WARN("[OBVSAG][cuVS] failed to write snapshot stream", K(ret), KP(key), K(n));
     return true;
   }
-  std::vector<char> chunk(65536);
+  std::vector<char> chunk(4UL * 1024 * 1024);
   uint64_t remaining = graph_bytes;
   while (remaining > 0) {
     const size_t bytes = std::min<uint64_t>(remaining, chunk.size());
@@ -475,7 +486,7 @@ static int ob_cuvs_deserialize(void *key, int expected_dim, std::istream &in) {
       LOG_WARN("[OBVSAG][cuVS] truncated snapshot payload", K(ret), KP(key), K(n64));
     } else {
       ObCuvsSnapshotFile graph;
-      std::vector<char> chunk(65536);
+      std::vector<char> chunk(4UL * 1024 * 1024);
       uint64_t remaining = graph_bytes;
       while (graph.file_ != nullptr && remaining > 0) {
         const size_t bytes = std::min<uint64_t>(remaining, chunk.size());
