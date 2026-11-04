@@ -55,7 +55,6 @@ int ObIKFTParser::init(const ObFTParserParam &param)
     } else if (OB_FAIL(init_dict(param))) {
     } else if (OB_FAIL(init_ctx(param))) {
     } else if (OB_FAIL(init_segmenter(param))) {
-    } else if (OB_FAIL(arb_.prepare())) {
     }
 
     if (OB_FAIL(ret)) {
@@ -115,7 +114,7 @@ int ObIKFTParser::produce()
 {
   int ret = OB_SUCCESS;
   // Loop until end or has data to output
-  while (OB_SUCC(ret) && ctx_->is_results_exhaust() && !ctx_->iter_end()) {
+  while (OB_SUCC(ret) && ctx_->result_list().empty() && !ctx_->iter_end()) {
     if (OB_FAIL(process_next_batch())) {
       if (OB_ITER_END == ret) {
         // ok
@@ -156,16 +155,16 @@ int ObIKFTParser::process_next_batch()
   if (ctx_->iter_end()) {
     ret = OB_ITER_END;
   } else {
-    ctx_->calc_buffer_start_cursor();
     while (OB_SUCC(ret) && !do_seg && !ctx_->iter_end()) {
       const char *ch;
       uint8_t char_len = 0;
       ObFTCharUtil::CharType type = ObFTCharUtil::CharType::USELESS;
-      if (OB_FAIL(ctx_->current_char_and_type(ch, char_len, type))) {
+      if (OB_FAIL(ctx_->current_char(ch, char_len))) {
+      } else if (OB_FAIL(ctx_->current_char_type(type))) {
       } else if (OB_FAIL(process_one_char(*ctx_, ch, char_len, type))) {
       } else {
         // 1. check segmention
-        if (ctx_->handle_size() >= HANDLE_SIZE_LIMIT && type == ObFTCharUtil::CharType::USELESS) {
+        if (ctx_->handle_size() > SEGMENT_LIMIT && type == ObFTCharUtil::CharType::USELESS) {
           do_seg = true;
         }
 
@@ -179,10 +178,9 @@ int ObIKFTParser::process_next_batch()
     }
 
     if (OB_SUCC(ret) || OB_ITER_END == ret) {
-      if (OB_FAIL(arb_.process(*ctx_))) {
-      } else if (OB_FAIL(arb_.output_result(*ctx_))) {
-      } else {
-        arb_.reuse();
+      ObIKArbitrator arb;
+      if (OB_FAIL(arb.process(*ctx_))) {
+      } else if (OB_FAIL(arb.output_result(*ctx_))) {
       }
     } else {
       // Already logged.
@@ -293,12 +291,15 @@ int ObIKFTParser::init_ctx(const ObFTParserParam &param)
 
   if (coll_type_ == common::CS_TYPE_INVALID) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (OB_ISNULL(ctx_ = OB_NEWx(TokenizeContext, &allocator_, allocator_))) {
+  } else if (OB_ISNULL(ctx_ = OB_NEWx(TokenizeContext,
+                                      &allocator_,
+                                      coll_type_,
+                                      allocator_,
+                                      param.fulltext_,
+                                      param.ft_length_,
+                                      param.ik_param_.mode_ == ObFTIKParam::Mode::SMART))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
-  } else if (OB_FAIL(ctx_->init(coll_type_,
-                                param.fulltext_,
-                                param.ft_length_,
-                                param.ik_param_.mode_ == ObFTIKParam::Mode::SMART))) {
+  } else if (OB_FAIL(ctx_->init())) {
   }
   if (OB_FAIL(ret)) {
     OB_DELETEx(TokenizeContext, &allocator_, ctx_);

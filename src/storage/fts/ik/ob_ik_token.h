@@ -1,13 +1,17 @@
-/**
- * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+/*
+ * Copyright (c) 2025 OceanBase.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #ifndef _OCEANBASE_STORAGE_FTS_IK_OB_IK_TOKEN_H_
@@ -15,16 +19,10 @@
 
 #include "lib/allocator/ob_allocator.h"
 #include "lib/list/ob_list.h"
-#include "storage/fts/ik/ob_fast_list.h"
-
 namespace oceanbase
 {
 namespace storage
 {
-
-
-static constexpr uint32_t HANDLE_SIZE_LIMIT = 256;
-
 enum class ObIKTokenType : int8_t
 {
   IK_CHINESE_TOKEN = 0,
@@ -73,7 +71,6 @@ public:
   }
 };
 
-template <typename ListType>
 class ObFTSortList
 {
 public:
@@ -90,19 +87,16 @@ public:
 
   int64_t max();
 
-  ListType &tokens() { return tokens_; }
-  const ListType &tokens() const { return tokens_; }
+  ObList<ObIKToken, ObIAllocator> &tokens() { return tokens_; }
+  const ObList<ObIKToken, ObIAllocator> &tokens() const { return tokens_; }
 
 public:
-  typedef typename ListType::iterator CellIter;
-  typedef typename ListType::const_iterator ConstCellIter;
+  typedef ObList<ObIKToken, ObIAllocator>::iterator CellIter;
+  typedef ObList<ObIKToken, ObIAllocator>::const_iterator ConstCellIter;
 
 private:
-  ListType tokens_;
+  ObList<ObIKToken, ObIAllocator> tokens_;
 };
-
-typedef ObFTSortList<ObList<ObIKToken, ObIAllocator>> ObFTLightSortList;
-typedef ObFTSortList<ObFastList<ObIKToken, HANDLE_SIZE_LIMIT>> ObFTFastSortList;
 
 class ObIKTokenChain
 {
@@ -119,7 +113,7 @@ public:
 
   bool check_conflict(const ObIKToken &token);
 
-  ObFTLightSortList &list() { return list_; }
+  ObFTSortList &list() { return list_; }
 
   bool better_than(const ObIKTokenChain &other) const;
 
@@ -141,7 +135,7 @@ private:
   int min_offset_ = -1;
   int max_offset_ = -1;
   int payload_ = -1;
-  ObFTLightSortList list_;
+  ObFTSortList list_;
 };
 
 } //  namespace storage
