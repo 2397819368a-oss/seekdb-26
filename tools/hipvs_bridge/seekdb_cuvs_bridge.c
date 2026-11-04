@@ -53,8 +53,8 @@
  * Anything else is guarded behind a compile-time macro.
  * ------------------------------------------------------------------------- */
 #define SK_DEF_NITER        50
-#define SK_DEF_GRAPH_DEGREE 128
-#define SK_DEF_INTERMEDIATE 128
+#define SK_DEF_GRAPH_DEGREE 96
+#define SK_DEF_INTERMEDIATE 96
 #define SK_DEF_SEARCH_WIDTH 4
 
 static int sk_env_int(const char *name, int def, int lo, int hi)
