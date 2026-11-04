@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2024 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX STORAGE_FTS
@@ -25,30 +21,35 @@ namespace oceanbase
 {
 namespace storage
 {
-int ObFTSortList::add_token(const ObIKToken &token)
+template <typename ListType>
+int ObFTSortList<ListType>::add_token(const ObIKToken &token)
 {
   int ret = OB_SUCCESS;
 
   if (tokens_.empty()) {
     if (OB_FAIL(tokens_.push_back(token))) {
+      LOG_WARN("Failed to push back token", K(ret));
     }
   } else if (tokens_.get_last() == token) {
     // pass
   } else if (token > tokens_.get_last()) {
     if (OB_FAIL(tokens_.push_back(token))) {
+      LOG_WARN("fail to push back token", K(ret));
     }
   } else if (token < tokens_.get_first()) {
     if (OB_FAIL(tokens_.push_front(token))) {
+      LOG_WARN("fail to push back token", K(ret));
     }
   } else {
-    for (ObFTSortList::CellIter iter = tokens_.last(); OB_SUCC(ret) && iter != tokens_.end();
+    for (ObFTSortList<ListType>::CellIter iter = tokens_.last(); OB_SUCC(ret) && iter != tokens_.end();
          --iter) {
       if (token < *iter) {
         continue;
       }
       if (*iter == token) {
         // no need to add again
-      } else if (OB_FAIL(tokens_.insert(++iter, token))) {
+      } else if (OB_FAIL(tokens_.insert(++iter, token))) { // insert after iter
+        LOG_WARN("fail to insert token", K(ret));
       } else {
         // insert ok
       }
@@ -57,6 +58,28 @@ int ObFTSortList::add_token(const ObIKToken &token)
   }
 
   return ret;
+}
+
+template <typename ListType>
+int64_t ObFTSortList<ListType>::max()
+{
+  int64_t max_offset = 0;
+  if (tokens_.empty()) {
+  } else {
+    max_offset = tokens_.get_last().offset_ + tokens_.get_last().length_;
+  }
+  return max_offset;
+}
+
+template <typename ListType>
+int64_t ObFTSortList<ListType>::min()
+{
+  int64_t min_offset = 0;
+  if (tokens_.empty()) {
+  } else {
+    min_offset = tokens_.get_first().offset_;
+  }
+  return min_offset;
 }
 
 int ObIKTokenChain::add_token_if_conflict(const ObIKToken &token, bool &added)
@@ -156,15 +179,17 @@ int ObIKTokenChain::copy(ObIKTokenChain *other)
 
   if (OB_ISNULL(other)) {
     ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("other is null", K(ret));
   } else {
     min_offset_ = other->min_offset_;
     max_offset_ = other->max_offset_;
     payload_ = other->payload_;
-    ObFTSortList::CellIter iter = other->list().tokens().begin();
+    ObFTLightSortList::CellIter iter = other->list().tokens().begin();
 
     for (; OB_SUCC(ret) && iter != other->list().tokens().end(); ++iter) {
       bool added = false;
       if (OB_FAIL(add_token_if_no_conflict(*iter, added))) {
+        LOG_WARN("fail to add token", K(ret));
       }
     }
   }
@@ -195,8 +220,10 @@ int ObIKTokenChain::pop_back(ObIKToken &token)
   int ret = OB_SUCCESS;
   if (list_.tokens().empty()) {
     ret = OB_ENTRY_NOT_EXIST;
+    LOG_WARN("Token list is empty", K(ret));
   } else if (FALSE_IT(token = list_.tokens().get_last())) {
   } else if (OB_FAIL(list_.tokens().pop_back())) {
+    LOG_WARN("Pop back failed", K(ret));
   } else if (list_.tokens().empty()) {
     min_offset_ = -1;
     max_offset_ = -1;
@@ -210,19 +237,8 @@ int ObIKTokenChain::pop_back(ObIKToken &token)
   return ret;
 }
 
-int64_t ObFTSortList::max()
-{
-  if (tokens_.empty()) {
-    return 0;
-  }
-  return tokens_.get_last().offset_ + tokens_.get_last().length_;
-}
-int64_t ObFTSortList::min()
-{
-  if (tokens_.empty()) {
-    return 0;
-  }
-  return tokens_.get_first().offset_;
-}
+template class ObFTSortList<ObList<ObIKToken, ObIAllocator>>;
+template class ObFTSortList<ObFastList<ObIKToken, HANDLE_SIZE_LIMIT>>;
+
 } //  namespace storage
 } //  namespace oceanbase

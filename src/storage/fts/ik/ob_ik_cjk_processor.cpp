@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2024 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX STORAGE_FTS
@@ -43,12 +39,14 @@ int ObIKCJKProcessor::do_process(TokenizeContext &ctx,
          iter++) {
       ObDATrieHit &hit = *iter;
       if (OB_FAIL(dict_main_.match_with_hit({char_len, ch}, hit, hit))) {
+        LOG_WARN("fail to match with hit", K(ret));
       } else if (hit.is_match()) {
         if (OB_FAIL(ctx.add_token(ctx.fulltext(),
                                   hit.start_pos_,
                                   hit.end_pos_ - hit.start_pos_,
                                   hit.char_cnt_,
                                   ObIKTokenType::IK_CHINESE_TOKEN))) {
+          LOG_WARN("Fail to add chinese token");
         } else if (hit.is_prefix()) {
           // match will record the start_cursor
         }
@@ -58,6 +56,7 @@ int ObIKCJKProcessor::do_process(TokenizeContext &ctx,
         hits_.erase(hit);
       } else {
         ret = OB_UNEXPECT_INTERNAL_ERROR;
+        LOG_WARN("Match dict reach impossible path.", K(ret));
       }
     }
     if (OB_SUCC(ret)) {
@@ -65,6 +64,7 @@ int ObIKCJKProcessor::do_process(TokenizeContext &ctx,
       // find range of dict
       ObDATrieHit hit(&dict_main_, ctx.get_cursor());
       if (OB_FAIL(dict_main_.match({char_len, ch}, hit))) {
+        LOG_WARN("Fail to match", K(ret));
       } else if (hit.is_match()) {
         // output token
         hits_.push_back(hit);

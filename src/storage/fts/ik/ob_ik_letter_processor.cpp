@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2024 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX STORAGE_FTS
@@ -38,8 +34,11 @@ int ObIKLetterProcessor::do_process(TokenizeContext &ctx,
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(process_english_letter(ctx, ch, char_len, type))) {
+    LOG_WARN("Fail to process english letter", K(ret));
   } else if (OB_FAIL(process_arabic_letter(ctx, ch, char_len, type))) {
+    LOG_WARN("Fail to process arabic letter", K(ret));
   } else if (OB_FAIL(process_mix_letter(ctx, ch, char_len, type))) {
+    LOG_WARN("Fail to process mix letter", K(ret));
   }
   return ret;
 }
@@ -67,6 +66,7 @@ int ObIKLetterProcessor::process_english_letter(TokenizeContext &ctx,
                                 english_end_ - english_start_,
                                 english_char_cnt_,
                                 ObIKTokenType::IK_ENGLISH_TOKEN))) {
+        LOG_WARN("fail to add token", K(ret));
       } else {
         reset_english_state();
       }
@@ -80,6 +80,7 @@ int ObIKLetterProcessor::process_english_letter(TokenizeContext &ctx,
                                 english_end_ - english_start_,
                                 english_char_cnt_,
                                 ObIKTokenType::IK_ENGLISH_TOKEN))) {
+        LOG_WARN("Fail to add token", K(ret));
       } else {
         reset_english_state();
       }
@@ -112,6 +113,7 @@ int ObIKLetterProcessor::process_arabic_letter(TokenizeContext &ctx,
     arabic_connect_cnt_ = 0;
   } else if (OB_FAIL(
                  ObFTCharUtil::check_num_connector(ctx.collation(), ch, char_len, is_connector))) {
+    LOG_WARN("Fail to check is num connector", K(ret));
   } else if (ObFTCharUtil::CharType::USELESS == type && is_connector) {
     // only if connector follows  and is followed by an arabic number we count it
     arabic_connect_cnt_++;
@@ -124,6 +126,7 @@ int ObIKLetterProcessor::process_arabic_letter(TokenizeContext &ctx,
                               arabic_end_ - arabic_start_,
                               arabic_char_cnt_ + arabic_connect_cnt_,
                               ObIKTokenType::IK_ARABIC_TOKEN))) {
+      LOG_WARN("Fail to add token", K(ret));
     } else {
       reset_arabic_state();
     }
@@ -139,6 +142,7 @@ int ObIKLetterProcessor::process_arabic_letter(TokenizeContext &ctx,
                                 arabic_end_ - arabic_start_,
                                 arabic_char_cnt_ + arabic_connect_cnt_,
                                 ObIKTokenType::IK_ARABIC_TOKEN))) {
+        LOG_WARN("fail to add token", K(ret));
       } else {
         reset_arabic_state();
       }
@@ -172,6 +176,7 @@ int ObIKLetterProcessor::process_mix_letter(TokenizeContext &ctx,
                                                             ch,
                                                             char_len,
                                                             is_connector))) {
+      LOG_WARN("Fail to check is letter connector", K(ret));
     } else if (ObFTCharUtil::CharType::USELESS == type && is_connector) {
       this->mix_end_ = ctx.get_end_cursor();
       this->mix_char_cnt_++;
@@ -181,6 +186,7 @@ int ObIKLetterProcessor::process_mix_letter(TokenizeContext &ctx,
                                 mix_end_ - mix_start_,
                                 mix_char_cnt_,
                                 ObIKTokenType::IK_MIX_TOKEN))) {
+        LOG_WARN("Fail to add token", K(ret));
       } else {
         reset_mix_state();
       }
@@ -194,6 +200,7 @@ int ObIKLetterProcessor::process_mix_letter(TokenizeContext &ctx,
                                 mix_end_ - mix_start_,
                                 mix_char_cnt_,
                                 ObIKTokenType::IK_MIX_TOKEN))) {
+        LOG_WARN("Fail to add token", K(ret));
       } else {
         reset_mix_state();
       }
