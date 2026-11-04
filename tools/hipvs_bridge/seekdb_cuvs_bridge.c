@@ -28,7 +28,7 @@
  *   SEEKDB_CUVS_BUILD_ALGO   0=AUTO_SELECT 1=IVF_PQ 2=NN_DESCENT(default=2)
  *                            -> only compiled in when the hipVS header exposes
  *                               IVF_PQ / AUTO_SELECT; see SEEKDB_CUVS_HAS_IVF_PQ_ALGO
- *   SEEKDB_CUVS_NITER         nn_descent_niter              (tuned 60; baseline 100, ~1.6x faster build)
+ *   SEEKDB_CUVS_NITER         nn_descent_niter              (tuned 50; baseline 100)
  *   SEEKDB_CUVS_GRAPH_DEGREE  graph_degree                  (baseline 128)
  *   SEEKDB_CUVS_INTERMEDIATE  intermediate_graph_degree     (baseline 256)
  *   SEEKDB_CUVS_SEARCH_WIDTH  cagra search_width            (baseline 4)
@@ -52,7 +52,7 @@
  * refers to, so they are the ones guaranteed to exist in the target header.
  * Anything else is guarded behind a compile-time macro.
  * ------------------------------------------------------------------------- */
-#define SK_DEF_NITER        60
+#define SK_DEF_NITER        50
 #define SK_DEF_GRAPH_DEGREE 128
 #define SK_DEF_INTERMEDIATE 256
 #define SK_DEF_SEARCH_WIDTH 4
