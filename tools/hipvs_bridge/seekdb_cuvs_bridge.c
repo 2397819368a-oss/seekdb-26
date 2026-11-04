@@ -108,12 +108,15 @@ static sk_knobs sk_resolve_knobs(void)
   return k;
 }
 
+/* The pinned hipVS header (cuvs/neighbors/cagra.h) exposes AUTO_SELECT and
+ * IVF_PQ, so the fast graph-build path is compiled in unconditionally. A runtime
+ * failure still falls back to NN_DESCENT in seekdb_cuvs_build(). */
+#define SEEKDB_CUVS_HAS_IVF_PQ_ALGO 1
+
 #if defined(SEEKDB_CUVS_HAS_IVF_PQ_ALGO)
-/* The hipVS header must expose these constants for the switch to be compiled in;
- * probe_algo.sh verifies that in ~2s before this file is rebuilt with -D. */
 static int sk_resolve_build_algo(void)
 {
-  switch (sk_env_int("SEEKDB_CUVS_BUILD_ALGO", 2, 0, 2)) {
+  switch (sk_env_int("SEEKDB_CUVS_BUILD_ALGO", 1, 0, 2)) {
     case 0:  return (int)AUTO_SELECT;
     case 1:  return (int)IVF_PQ;
     default: return (int)NN_DESCENT;
@@ -163,7 +166,25 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   h->ip->intermediate_graph_degree = (size_t)k.intermediate_degree;
   h->ip->nn_descent_niter = (size_t)k.niter;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
-  if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
+  if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) {
+    /* IVF-PQ is the fast path; if the pinned hipVS rejects it at runtime, rebuild
+     * with NN-DESCENT so the round still yields a scoreable index. */
+    if ((int)h->ip->build_algo == (int)IVF_PQ) {
+      fprintf(stderr, "[seekdb_cuvs] IVF_PQ build failed (%s), retrying NN_DESCENT\n",
+              cuvsGetLastErrorText());
+      cuvsCagraIndexDestroy(h->idx);
+      cuvsCagraIndexParamsDestroy(h->ip);
+      if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
+      h->ip->build_algo = NN_DESCENT;
+      h->ip->graph_degree = (size_t)k.graph_degree;
+      h->ip->intermediate_graph_degree = (size_t)k.intermediate_degree;
+      h->ip->nn_descent_niter = (size_t)k.niter;
+      if (cuvsCagraIndexCreate(&h->idx) != CUVS_SUCCESS) goto fail_ip;
+      if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
+    } else {
+      goto fail_idx;
+    }
+  }
   h->n = n; h->dim = dim;
   h->k = k;
   if (sk_verbose()) {
