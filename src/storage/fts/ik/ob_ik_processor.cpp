@@ -109,7 +109,7 @@ int TokenizeContext::reset_resource()
   handle_size_ = 0;
   results_.reuse();
   result_idx_ = 0;
-  token_list_.reuse();
+  token_list_.tokens().reuse();
   return OB_SUCCESS;
 }
 

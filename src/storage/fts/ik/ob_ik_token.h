@@ -85,7 +85,6 @@ public:
   bool is_empty() const { return tokens_.empty(); }
 
   void reset() { tokens_.reset(); }
-  void reuse() { tokens_.reuse(); }
 
   int64_t min();
 
