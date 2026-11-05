@@ -58,9 +58,6 @@ private:
   uint64_t row_idx_;
   bool is_fts_index_aux_;
   storage::ObFTParseHelper helper_;
-  // word count map reused across documents; created once in init() to avoid
-  // per-document bucket array alloc/free (helper_.segment() clears it via reuse())
-  storage::ObFTWordMap ft_word_map_;
   bool is_inited_;
 
   DISALLOW_COPY_AND_ASSIGN(ObFTIndexRowCache);
@@ -183,17 +180,12 @@ public:
       const IntFixedArray &row_projector,
       const ObDASWriteBuffer::DmlRow &dml_row,
       ObDomainIndexRow &spat_rows);
-  // ft_word_map must be created by the caller; passing an uncreated map makes the
-  // function create it with a size derived from fulltext (legacy behavior). A
-  // pre-created map is reused across documents via ObFTParseHelper::segment's
-  // words.reuse() and avoids per-document bucket array alloc/free on the build path.
   static int generate_fulltext_word_rows(common::ObIAllocator &allocator,
                                          storage::ObFTParseHelper *helper,
                                          const common::ObObjMeta &ft_obj_meta,
                                          const ObDatum &doc_id_datum,
                                          const ObString &fulltext,
                                          const bool is_fts_index_aux,
-                                         storage::ObFTWordMap &ft_word_map,
                                          ObDomainIndexRow &word_rows);
   static int generate_multivalue_index_rows(
       ObIAllocator &allocator,
@@ -401,9 +393,6 @@ private:
   data_plane::ObFTDocWordIterator *ft_doc_word_iter_;
   common::ObArenaAllocator ft_doc_word_allocator_;
   storage::ObFTParseHelper ft_parse_helper_;
-  // word count map reused across changed rows; lazily created on first use and
-  // cleared per row by ObFTParseHelper::segment's words.reuse()
-  storage::ObFTWordMap ft_word_map_;
   bool is_inited_;
 };
 
