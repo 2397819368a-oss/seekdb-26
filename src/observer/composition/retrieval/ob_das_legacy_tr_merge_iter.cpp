@@ -268,7 +268,13 @@ int ObDASLegacyTRMergeIter::init_das_iter_scan_param(const ObTabletID &tablet_id
     scan_param.row2exprs_projector_ = rtdef->p_row2exprs_projector_;
     scan_param.schema_version_ = ctdef->schema_version_;
     scan_param.runtime_schema_version_ = rtdef->runtime_schema_version_;
-    scan_param.limit_param_ = rtdef->limit_param_;
+    // The per-token posting scans (and the aggregate scans) must never inherit the
+    // scan-level limit: every posting list has to be read as far as the merge needs
+    // it, otherwise an AND over several tokens can miss matches. The merged result
+    // is truncated exactly once by the retrieval iter (sr_iter_param_.limit_param_,
+    // which still points at the inv idx scan rtdef) and by the table scan itself.
+    scan_param.limit_param_.offset_ = 0;
+    scan_param.limit_param_.limit_ = -1;
     scan_param.need_scn_ = rtdef->need_scn_;
     scan_param.pd_storage_flag_ = ctdef->pd_expr_spec_.pd_storage_flag_.pd_flag_;
     scan_param.fb_snapshot_ = rtdef->fb_snapshot_;

@@ -12832,37 +12832,18 @@ int ObLogPlan::try_push_topn_into_text_retrieval_scan(ObLogicalOperator *&top,
   } else if (sort_keys.count() >= 1 && OB_NOT_NULL(sort_keys.at(0).expr_) &&
              sort_keys.at(0).expr_ == table_scan->get_text_retrieval_info().match_expr_) {
     // only accept match expr as prefix sort key.
-    bool score_free_limit_pushed = false;
-    if (!table_scan->get_text_retrieval_info().need_calc_relevance_ && !is_fetch_with_ties &&
-        !need_exchange && OB_NOT_NULL(limit_expr) && !table_scan->is_distributed()) {
-      // The match score is not computed at all (the query never reads it), so the
-      // relevance ordering is meaningless. Push the plain limit into the scan so the
-      // retrieval iterators can stop as soon as enough rows are produced instead of
-      // walking the whole inverted index list to build a top-n ranking.
-      bool is_pushed = false;
-      if (OB_FAIL(try_push_limit_into_table_scan(
-              top, limit_expr, limit_expr, offset_expr, is_pushed))) {
-      } else if (is_pushed) {
-        table_scan->get_text_retrieval_info().topk_limit_expr_ = limit_expr;
-        table_scan->get_text_retrieval_info().topk_offset_expr_ = offset_expr;
-        need_further_sort = false;
-        score_free_limit_pushed = true;
-      }
-    }
-    if (OB_SUCC(ret) && !score_free_limit_pushed) {
-      has_multi_sort_keys = sort_keys.count() == 1 ? false : true;
-      need_further_sort = has_multi_sort_keys || table_scan->use_das() || need_exchange;
-      pushed_limit_expr = need_further_sort ? topn_expr : limit_expr;
-      pushed_offset_expr = need_further_sort ? NULL : offset_expr;
-      ObSEArray<OrderItem, 1> tmp_sort_keys;
-      table_scan->get_text_retrieval_info().topk_limit_expr_ = pushed_limit_expr;
-      table_scan->get_text_retrieval_info().topk_offset_expr_ = pushed_offset_expr;
-      table_scan->get_text_retrieval_info().sort_key_.expr_ = sort_keys.at(0).expr_;
-      table_scan->get_text_retrieval_info().sort_key_.order_type_ = sort_keys.at(0).order_type_;
-      table_scan->get_text_retrieval_info().with_ties_ = (has_multi_sort_keys || is_fetch_with_ties);
-      if (OB_FAIL(tmp_sort_keys.push_back(sort_keys.at(0)))) {
-      } else if (OB_FAIL(table_scan->set_op_ordering(tmp_sort_keys))) {
-      }
+    has_multi_sort_keys = sort_keys.count() == 1 ? false : true;
+    need_further_sort = has_multi_sort_keys || table_scan->use_das() || need_exchange;
+    pushed_limit_expr = need_further_sort ? topn_expr : limit_expr;
+    pushed_offset_expr = need_further_sort ? NULL : offset_expr;
+    ObSEArray<OrderItem, 1> tmp_sort_keys;
+    table_scan->get_text_retrieval_info().topk_limit_expr_ = pushed_limit_expr;
+    table_scan->get_text_retrieval_info().topk_offset_expr_ = pushed_offset_expr;
+    table_scan->get_text_retrieval_info().sort_key_.expr_ = sort_keys.at(0).expr_;
+    table_scan->get_text_retrieval_info().sort_key_.order_type_ = sort_keys.at(0).order_type_;
+    table_scan->get_text_retrieval_info().with_ties_ = (has_multi_sort_keys || is_fetch_with_ties);
+    if (OB_FAIL(tmp_sort_keys.push_back(sort_keys.at(0)))) {
+    } else if (OB_FAIL(table_scan->set_op_ordering(tmp_sort_keys))) {
     }
   }
   return ret;
