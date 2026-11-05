@@ -348,7 +348,6 @@ int ObRsSliceWriter::append_current_row(const ObIArray<ObDatum *> &datums)
   } else if (OB_UNLIKELY(datums.count() != sql_column_count_)) {
     ret = OB_INVALID_ARGUMENT;
   } else if (OB_FAIL(build_multi_version_row(datums))) {
-  } else if (FALSE_IT(row_arena_.reuse())) {
   } else if (OB_FAIL(ObDDLStorageUtil::convert_to_storage_row(tablet_id_, slice_idx_, writer_param_, lob_writer_, row_arena_, current_row_))) {
   } else if (OB_FAIL(storage_slice_writer_->append_row(current_row_))) {
   }
