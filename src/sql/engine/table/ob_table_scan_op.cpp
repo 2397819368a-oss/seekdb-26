@@ -680,6 +680,8 @@ ObTableScanOp::ObTableScanOp(ObExecContext &exec_ctx, const ObOpSpec &spec, ObOp
     in_rescan_(false),
     domain_index_(),
     fts_index_(),
+    fts_exprs_resolved_(false),
+    fts_lob_allocator_(ObModIds::OB_LOB_ACCESS_BUFFER, OB_MALLOC_NORMAL_BLOCK_SIZE),
     output_   (nullptr),
     fold_iter_(nullptr),
     iter_tree_(nullptr),
@@ -3685,28 +3687,26 @@ int ObTableScanOp::fetch_next_fts_index_rows()
 {
   int ret = OB_SUCCESS;
   bool has_segment_word = false;
+  if (OB_FAIL(resolve_fts_exprs())) {
+  }
   while (OB_SUCC(ret) && !has_segment_word) {
-    ObExpr *ft_expr = nullptr;
-    ObExpr *doc_id_expr = nullptr;
+    ObExpr *ft_expr = fts_scan_exprs_[0];
+    ObExpr *doc_id_expr = fts_scan_exprs_[1];
     ObDatum *ft_datum = nullptr;
     ObDatum *doc_id_datum = nullptr;
 
     if (OB_FAIL(ObTableScanOp::inner_get_next_row_implement())) {
       if (OB_ITER_END != ret) {
       }
-    } else if (OB_FAIL(get_output_fts_col_expr_by_type(T_FUN_SYS_DOC_ID, doc_id_expr))) {
-    } else if (OB_FAIL(get_output_fts_col_expr_by_type(T_FUN_SYS_WORD_SEGMENT, ft_expr))) {
-    } else if (OB_ISNULL(ft_expr) || OB_ISNULL(doc_id_expr)) {
-      ret = OB_ERR_UNEXPECTED;
     } else if (OB_FAIL(ft_expr->eval(eval_ctx_, ft_datum))) {
     } else if (OB_FAIL(doc_id_expr->eval(eval_ctx_, doc_id_datum))) {
     } else if (OB_ISNULL(ft_datum) || OB_ISNULL(doc_id_datum)) {
       ret = OB_ERR_UNEXPECTED;
     } else {
       ObString ft = ft_datum->get_string();
-      ObArenaAllocator tmp_allocator(ObModIds::OB_LOB_ACCESS_BUFFER, OB_MALLOC_NORMAL_BLOCK_SIZE);
+      fts_lob_allocator_.reset();
       if (OB_FAIL(ObTextStringHelper::read_real_string_data(get_exec_ctx(),
-                                                            tmp_allocator,
+                                                            fts_lob_allocator_,
                                                             *ft_datum,
                                                             ft_expr->datum_meta_,
                                                             ft_expr->obj_meta_.has_lob_header(),
@@ -3723,25 +3723,45 @@ int ObTableScanOp::fetch_next_fts_index_rows()
   return ret;
 }
 
+int ObTableScanOp::resolve_fts_exprs()
+{
+  int ret = OB_SUCCESS;
+  if (OB_LIKELY(fts_exprs_resolved_)) {
+    // already resolved
+  } else {
+    const ObExprOperatorType *expr_types = MY_SPEC.is_fts_index_aux_
+                                           ? ObFTIndexRowCache::FTS_INDEX_EXPR_TYPE
+                                           : ObFTIndexRowCache::FTS_DOC_WORD_EXPR_TYPE;
+    for (int64_t i = 0; OB_SUCC(ret) && i < share::ObFtsIndexBuilderUtil::OB_FTS_INDEX_OR_DOC_WORD_TABLE_COL_CNT; ++i) {
+      if (OB_FAIL(get_output_fts_col_expr_by_type(expr_types[i], fts_out_exprs_[i]))) {
+      }
+    }
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(get_output_fts_col_expr_by_type(T_FUN_SYS_WORD_SEGMENT, fts_scan_exprs_[0]))) {
+    } else if (OB_FAIL(get_output_fts_col_expr_by_type(T_FUN_SYS_DOC_ID, fts_scan_exprs_[1]))) {
+    } else {
+      fts_exprs_resolved_ = true;
+    }
+  }
+  return ret;
+}
+
 int ObTableScanOp::fill_generated_fts_cols(blocksstable::ObDatumRow *row)
 {
   int ret = OB_SUCCESS;
   const ObObjDatumMapType *types = MY_SPEC.is_fts_index_aux_ ? ObFTIndexRowCache::FTS_INDEX_TYPES : ObFTIndexRowCache::FTS_DOC_WORD_TYPES;
-  const ObExprOperatorType *expr_types = MY_SPEC.is_fts_index_aux_ ? ObFTIndexRowCache::FTS_INDEX_EXPR_TYPE : ObFTIndexRowCache::FTS_DOC_WORD_EXPR_TYPE;
   if (OB_ISNULL(row)) {
     ret = OB_INVALID_ARGUMENT;
+  } else if (OB_FAIL(resolve_fts_exprs())) {
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < share::ObFtsIndexBuilderUtil::OB_FTS_INDEX_OR_DOC_WORD_TABLE_COL_CNT; ++i) {
-      ObExpr *expr = nullptr;
-      if (OB_FAIL(get_output_fts_col_expr_by_type(expr_types[i], expr))) {
+      ObExpr *expr = fts_out_exprs_[i];
+      ObDatum &datum = expr->locate_datum_for_write(eval_ctx_);
+      ObEvalInfo &eval_info = expr->get_eval_info(eval_ctx_);
+      if (OB_FAIL(datum.from_storage_datum(row->storage_datums_[i], types[i]))) {
       } else {
-        ObDatum &datum = expr->locate_datum_for_write(eval_ctx_);
-        ObEvalInfo &eval_info = expr->get_eval_info(eval_ctx_);
-        if (OB_FAIL(datum.from_storage_datum(row->storage_datums_[i], types[i]))) {
-        } else {
-          eval_info.evaluated_ = true;
-          eval_info.projected_ = true;
-        }
+        eval_info.evaluated_ = true;
+        eval_info.projected_ = true;
       }
     }
   }

@@ -36,6 +36,12 @@ namespace sql
 {
 using storage::ObFTWordMap;
 
+namespace
+{
+// upper bound of per-document distinct words used to size the reusable FT word map
+constexpr int64_t OB_FT_WORD_MAX_BUCKET = 1999;
+}
+
 
 ObObjDatumMapType ObFTIndexRowCache::FTS_INDEX_TYPES[] = {OBJ_DATUM_STRING, OBJ_DATUM_STRING, OBJ_DATUM_8BYTE_DATA, OBJ_DATUM_8BYTE_DATA};
 ObObjDatumMapType ObFTIndexRowCache::FTS_DOC_WORD_TYPES[] = {OBJ_DATUM_STRING, OBJ_DATUM_STRING, OBJ_DATUM_8BYTE_DATA, OBJ_DATUM_8BYTE_DATA};
@@ -69,6 +75,7 @@ int ObFTIndexRowCache::init(
     ret = OB_INIT_TWICE;
   } else if (OB_FAIL(CURRENT_CONTEXT->CREATE_CONTEXT(merge_memctx_, param))) {
   } else if (OB_FAIL(helper_.init(&(merge_memctx_->get_arena_allocator()), parser_name, parser_properties))) {
+  } else if (OB_FAIL(ft_word_map_.create(OB_FT_WORD_MAX_BUCKET, common::ObMemAttr("FTWordMap")))) {
   } else {
     row_idx_ = 0;
     is_fts_index_aux_ = is_fts_index_aux;
@@ -94,6 +101,7 @@ int ObFTIndexRowCache::segment(const common::ObObjMeta &ft_obj_meta,
                                                                    doc_id_datum,
                                                                    fulltext,
                                                                    is_fts_index_aux_,
+                                                                   ft_word_map_,
                                                                    rows_))) {
   } else {
     row_idx_ = 0;
@@ -280,21 +288,21 @@ int ObDASDomainUtils::build_ft_doc_word_infos(
                                                              const ObDatum &doc_id_datum,
                                                              const ObString &fulltext,
                                                              const bool is_fts_index_aux,
+                                                             ObFTWordMap &ft_word_map,
                                                              ObDomainIndexRow &word_rows)
 {
   int ret = OB_SUCCESS;
   static int64_t FT_WORD_DOC_COL_CNT = 4;
-  static constexpr int64_t FT_MAX_WORD_BUCKET = 1999;
-  const int64_t ft_word_bkt_cnt = MIN(MAX(fulltext.length() / 3, 3), FT_MAX_WORD_BUCKET);
+  const int64_t ft_word_bkt_cnt = MIN(MAX(fulltext.length() / 3, 3), OB_FT_WORD_MAX_BUCKET);
   int64_t doc_length = 0;
-  ObFTWordMap ft_word_map;
   void *rows_buf = nullptr;
   blocksstable::ObDatumRow *rows = nullptr;
   if (OB_ISNULL(helper) || OB_UNLIKELY(!ft_obj_meta.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
   } else if (0 == fulltext.length()) {
     ret = OB_ITER_END;
-  } else if (OB_FAIL(ft_word_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
+  } else if (!ft_word_map.created()
+             && OB_FAIL(ft_word_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
   } else if (OB_FAIL(segment_and_calc_word_count(allocator,
                                                  helper,
                                                  ft_obj_meta,
@@ -1033,6 +1041,7 @@ int ObFTDMLIterator::generate_ft_word_rows(const ObChunkDatumStore::StoredRow *s
                                                                    doc_id_datum,
                                                                    ft,
                                                                    is_fts_index_aux,
+                                                                   ft_word_map_,
                                                                    rows_))) {
     if (OB_UNLIKELY(OB_ITER_END != ret)) {
     }
@@ -1106,6 +1115,7 @@ int ObFTDMLIterator::scan_ft_word_rows(const ObChunkDatumStore::StoredRow *store
     ObString ft;
     common::ObObjMeta ft_meta;
     ObDomainIndexRow rows;
+    storage::ObFTWordMap check_word_map;
     const bool is_fts_index_aux = das_ctdef_->table_param_.get_data_table().is_fts_index_aux();
     if (OB_FAIL(ft_parse_helper.init(&allocator, parser_str, parser_property_str))) {
     } else if (!is_update_ && OB_FAIL(get_ft_and_doc_id(store_row, check_id_datum, ft, ft_meta))) {
@@ -1116,6 +1126,7 @@ int ObFTDMLIterator::scan_ft_word_rows(const ObChunkDatumStore::StoredRow *store
                                                                      check_id_datum,
                                                                      ft,
                                                                      is_fts_index_aux,
+                                                                     check_word_map,
                                                                      rows))) {
       if (OB_UNLIKELY(OB_ITER_END != ret)) {
       }
