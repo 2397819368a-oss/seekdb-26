@@ -53,8 +53,8 @@
  * Anything else is guarded behind a compile-time macro.
  * ------------------------------------------------------------------------- */
 #define SK_DEF_NITER        40
-#define SK_DEF_GRAPH_DEGREE 96
-#define SK_DEF_INTERMEDIATE 96
+#define SK_DEF_GRAPH_DEGREE 128
+#define SK_DEF_INTERMEDIATE 128
 #define SK_DEF_SEARCH_WIDTH 4
 
 static int sk_env_int(const char *name, int def, int lo, int hi)
@@ -111,12 +111,12 @@ static sk_knobs sk_resolve_knobs(void)
 /* The pinned hipVS header (cuvs/neighbors/cagra.h) exposes AUTO_SELECT and
  * IVF_PQ, so the fast graph-build path is compiled in unconditionally. A runtime
  * failure still falls back to NN_DESCENT in seekdb_cuvs_build(). */
-#define SEEKDB_CUVS_HAS_IVF_PQ_ALGO 1
+/* IVF_PQ disabled: degree sweep showed recall is the binding constraint; NN_DESCENT only */
 
 #if defined(SEEKDB_CUVS_HAS_IVF_PQ_ALGO)
 static int sk_resolve_build_algo(void)
 {
-  switch (sk_env_int("SEEKDB_CUVS_BUILD_ALGO", 1, 0, 2)) {
+  switch (sk_env_int("SEEKDB_CUVS_BUILD_ALGO", 2, 0, 2)) {
     case 0:  return (int)AUTO_SELECT;
     case 1:  return (int)IVF_PQ;
     default: return (int)NN_DESCENT;
