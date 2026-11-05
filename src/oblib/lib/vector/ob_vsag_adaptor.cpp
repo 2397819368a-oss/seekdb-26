@@ -496,14 +496,38 @@ static int ob_cuvs_deserialize(void *key, int expected_dim, std::istream &in) {
         remaining -= bytes;
       }
       ObCuvsSnapshotJob job{graph.path_, nullptr, static_cast<long>(n), dim32, true, -1};
-      if (graph.file_ == nullptr || remaining != 0 || ::fflush(graph.file_) != 0 ||
-          !ob_cuvs_snapshot_big_stack(job)) {
+      std::shared_ptr<void> bridge;
+      if (graph.file_ != nullptr && remaining == 0 && ::fflush(graph.file_) == 0 &&
+          ob_cuvs_snapshot_big_stack(job) && job.handle_ != nullptr) {
+        bridge = ob_cuvs_wrap(job.handle_);
+      }
+      if (bridge != nullptr) {
+        // Self-check: the snapshot now carries the graph without an embedded
+        // dataset, and this hipVS generation may accept it silently while the
+        // resulting index cannot search. Probe with a stored vector; row 0 must
+        // find itself (CAGRA row offset 0) at distance ~0.
+        unsigned probe_id = UINT32_MAX;
+        float probe_dist = 0;
+        if (seekdb_cuvs_search(bridge.get(), ent->buf_vecs_.data(), 1, 1,
+                               &probe_id, &probe_dist) != 0 || probe_id != 0) {
+          LOG_WARN("[OBVSAG][cuVS] deserialized graph unusable, rebuilding from persisted vectors",
+                   KP(key), K(probe_id));
+          bridge.reset();
+        }
+      }
+      if (bridge == nullptr) {
+        // Rebuild off the load path from the vectors that are persisted next to
+        // the graph. Load time is not part of the timed DDL, and the rebuild
+        // uses the same tuned parameters as the original build.
+        bridge = ob_cuvs_build_big_stack(ent->buf_vecs_.data(), static_cast<long>(n), dim32);
+      }
+      if (bridge == nullptr) {
         delete ent;
         ret = OB_ERR_VSAG_RETURN_ERROR;
         LOG_WARN("[OBVSAG][cuVS] failed to load CAGRA graph from snapshot", K(ret), KP(key), K(n64));
         return ret;
       }
-      ent->bridge_ = ob_cuvs_wrap(job.handle_);
+      ent->bridge_ = bridge;
       ent->built_n_ = n;
       ent->ids_ = ent->buf_ids_;
       {

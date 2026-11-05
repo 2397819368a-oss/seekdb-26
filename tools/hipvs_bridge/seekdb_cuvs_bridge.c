@@ -328,7 +328,11 @@ int seekdb_cuvs_serialize(void* handle, const char* filename)
 {
   sk_cuvs_index* index = (sk_cuvs_index*)handle;
   if (!index || !filename) return 1;
-  if (cuvsCagraSerialize(index->res, filename, index->idx, true) != CUVS_SUCCESS) {
+  /* include_dataset=false: the adaptor persists the vectors itself, so embedding
+   * a second copy of the dataset here wrote ~128MB per 250K index twice. The
+   * load path rebuilds from the persisted vectors if the graph alone cannot be
+   * re-attached (see ob_cuvs_deserialize in ob_vsag_adaptor.cpp). */
+  if (cuvsCagraSerialize(index->res, filename, index->idx, false) != CUVS_SUCCESS) {
     fprintf(stderr, "[seekdb_cuvs] serialize failed: %s\n", cuvsGetLastErrorText());
     return 1;
   }
