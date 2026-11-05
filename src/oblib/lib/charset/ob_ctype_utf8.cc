@@ -331,6 +331,46 @@ static inline int ob_strnncoll_ascii_prefix(const unsigned char *&src,
   return cmp;
 }
 
+// For utf8mb4_general_ci, a 3-byte UTF-8 character has sort weight == its
+// codepoint whenever its lead byte is not 0xE1 (verified empirically against
+// the stock binary: lead bytes 0xE0,0xE2..0xEF all preserve codepoint order;
+// 0xE1 contains case-folded Latin/Cyrillic; 4-byte chars 0xF0+ all compare
+// equal and are never handled here).  UTF-8 preserves codepoint order, so a
+// run of such characters on both sides can be compared with memcmp instead of
+// decoding each character and walking the unicode weight pages.
+static inline bool ob_safe_3byte_lead(unsigned char b)
+{
+  return b >= 0xE0 && b <= 0xEF && b != 0xE1;
+}
+
+static inline int ob_strnncoll_safe3_run(const unsigned char *&src,
+                                          const unsigned char *se,
+                                          const unsigned char *&dst,
+                                          const unsigned char *te)
+{
+  if (!ob_safe_3byte_lead(*src) || !ob_safe_3byte_lead(*dst))
+    return 0;
+  const unsigned char *sp = src;
+  while (sp + 2 < se && ob_safe_3byte_lead(sp[0]) &&
+         sp[1] >= 0x80 && sp[1] < 0xC0 &&
+         sp[2] >= 0x80 && sp[2] < 0xC0)
+    sp += 3;
+  const unsigned char *dp = dst;
+  while (dp + 2 < te && ob_safe_3byte_lead(dp[0]) &&
+         dp[1] >= 0x80 && dp[1] < 0xC0 &&
+         dp[2] >= 0x80 && dp[2] < 0xC0)
+    dp += 3;
+  const size_t n = (size_t)((sp - src) < (dp - dst) ? (sp - src) : (dp - dst));
+  if (n > 0) {
+    const int c = memcmp(src, dst, n);
+    if (c != 0)
+      return c > 0 ? 1 : -1;
+    src += n;
+    dst += n;
+  }
+  return 0;
+}
+
 static int ob_strnncoll_utf8mb4(const ObCharsetInfo *cs,
                      const unsigned char *src, size_t srclen,
                      const unsigned char *dst, size_t dstlen,
@@ -345,6 +385,13 @@ static int ob_strnncoll_utf8mb4(const ObCharsetInfo *cs,
     return ascii_cmp;
   }
   while ( src < se && dst < te ) {
+    int safe_cmp = ob_strnncoll_safe3_run(src, se, dst, te);
+    if (0 != safe_cmp) {
+      return safe_cmp;
+    }
+    if (src >= se || dst >= te) {
+      break;
+    }
     int s_res = ob_mb_wc_utf8mb4(cs, &src_wc, src, se);
     int t_res = ob_mb_wc_utf8mb4(cs, &dst_wc, dst, te);
     if ( s_res <= 0 || t_res <= 0 ) {
@@ -419,6 +466,13 @@ static int ob_strnncollsp_utf8mb4(const ObCharsetInfo *cs,
     return ascii_cmp;
   }
   while ( src < se && dst < te ) {
+    int safe_cmp = ob_strnncoll_safe3_run(src, se, dst, te);
+    if (0 != safe_cmp) {
+      return safe_cmp;
+    }
+    if (src >= se || dst >= te) {
+      break;
+    }
     int s_res= ob_mb_wc_utf8mb4(cs, &src_wc, src, se);
     int t_res= ob_mb_wc_utf8mb4(cs, &dst_wc, dst, te);
     if ( s_res <= 0 || t_res <= 0 ) {
@@ -503,6 +557,21 @@ size_t ob_strnxfrm_unicode(const ObCharsetInfo *cs,
     while (src < se && dst + 2 <= de && nweights && *src < 0x80 && 0 != *src) {
       dst = store16be(dst, static_cast<uint16_t>(ob_ascii_sort_weight(*src)));
       ++src;
+      --nweights;
+    }
+  }
+  // Safe 3-byte fast path: sort weight == codepoint (no case folding), so
+  // extract the codepoint straight from the UTF-8 bytes and store it,
+  // skipping mb_wc decode and the unicode weight page lookup.
+  if (NULL != uni_plane) {
+    while (src + 2 < se && dst + 2 <= de && nweights &&
+           ob_safe_3byte_lead(*src) &&
+           src[1] >= 0x80 && src[1] < 0xC0 &&
+           src[2] >= 0x80 && src[2] < 0xC0) {
+      const uint16_t wc = static_cast<uint16_t>(
+          ((src[0] & 0x0F) << 12) | ((src[1] & 0x3F) << 6) | (src[2] & 0x3F));
+      dst = store16be(dst, wc);
+      src += 3;
       --nweights;
     }
   }
