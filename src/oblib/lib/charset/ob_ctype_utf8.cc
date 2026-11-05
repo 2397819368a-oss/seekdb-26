@@ -302,6 +302,35 @@ static inline void ob_tosort_unicode(ObUnicaseInfo *uni_plane, ob_wc_t *wc, unsi
   }
 }
 
+// For utf8mb4_general_ci an ASCII character sorts with the weight of the
+// UPPER-case form (ob_unicase_default maps both 'a' and 'A' to 0x41), so a
+// leading run of ASCII bytes can be compared without decoding UTF-8 and
+// walking the unicode weight pages.  The remaining (possibly multi-byte)
+// suffix is still handled by the generic loop below.
+static inline int ob_ascii_sort_weight(const unsigned char c)
+{
+  return (c >= 'a' && c <= 'z') ? static_cast<int>(c) - ('a' - 'A') : static_cast<int>(c);
+}
+
+static inline int ob_strnncoll_ascii_prefix(const unsigned char *&src,
+                                            const unsigned char *se,
+                                            const unsigned char *&dst,
+                                            const unsigned char *te)
+{
+  int cmp = 0;
+  while (src < se && dst < te && *src < 0x80 && *dst < 0x80) {
+    const int l_wc = ob_ascii_sort_weight(*src);
+    const int r_wc = ob_ascii_sort_weight(*dst);
+    if (l_wc != r_wc) {
+      cmp = l_wc > r_wc ? 1 : -1;
+      break;
+    }
+    ++src;
+    ++dst;
+  }
+  return cmp;
+}
+
 static int ob_strnncoll_utf8mb4(const ObCharsetInfo *cs,
                      const unsigned char *src, size_t srclen,
                      const unsigned char *dst, size_t dstlen,
@@ -311,6 +340,10 @@ static int ob_strnncoll_utf8mb4(const ObCharsetInfo *cs,
   const unsigned char *se = src + srclen;
   const unsigned char *te = dst + dstlen;
   ObUnicaseInfo *uni_plane = cs->caseinfo;
+  int ascii_cmp = ob_strnncoll_ascii_prefix(src, se, dst, te);
+  if (0 != ascii_cmp) {
+    return ascii_cmp;
+  }
   while ( src < se && dst < te ) {
     int s_res = ob_mb_wc_utf8mb4(cs, &src_wc, src, se);
     int t_res = ob_mb_wc_utf8mb4(cs, &dst_wc, dst, te);
@@ -381,6 +414,10 @@ static int ob_strnncollsp_utf8mb4(const ObCharsetInfo *cs,
   ob_wc_t src_wc = 0, dst_wc = 0;
   const unsigned char *se= src + srclen, *te= dst + dstlen;
   ObUnicaseInfo *uni_plane= cs->caseinfo;
+  int ascii_cmp = ob_strnncoll_ascii_prefix(src, se, dst, te);
+  if (0 != ascii_cmp) {
+    return ascii_cmp;
+  }
   while ( src < se && dst < te ) {
     int s_res= ob_mb_wc_utf8mb4(cs, &src_wc, src, se);
     int t_res= ob_mb_wc_utf8mb4(cs, &dst_wc, dst, te);
