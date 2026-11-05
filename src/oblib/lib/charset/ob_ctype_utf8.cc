@@ -318,7 +318,7 @@ static inline int ob_strnncoll_ascii_prefix(const unsigned char *&src,
                                             const unsigned char *te)
 {
   int cmp = 0;
-  while (src < se && dst < te && *src < 0x80 && *dst < 0x80) {
+  while (src < se && dst < te && *src < 0x80 && *dst < 0x80 && 0 != *src && 0 != *dst) {
     const int l_wc = ob_ascii_sort_weight(*src);
     const int r_wc = ob_ascii_sort_weight(*dst);
     if (l_wc != r_wc) {
@@ -497,6 +497,15 @@ size_t ob_strnxfrm_unicode(const ObCharsetInfo *cs,
   wc = 0;
   ob_charset_assert(src);
   *is_valid_unicode = 1;
+  // ASCII fast path: the sort weight of an ASCII byte is known without
+  // decoding UTF-8 or walking the unicode weight pages.
+  if (NULL != uni_plane && 0 == (cs->state & OB_CS_LOWER_SORT)) {
+    while (src < se && dst + 2 <= de && nweights && *src < 0x80 && 0 != *src) {
+      dst = store16be(dst, static_cast<uint16_t>(ob_ascii_sort_weight(*src)));
+      ++src;
+      --nweights;
+    }
+  }
   for (; dst < de && nweights; nweights--)
   {
     if ((res= cs->cset->mb_wc(cs, &wc, src, se)) <= 0) {
@@ -528,6 +537,15 @@ size_t ob_varlen_encoding_for_memcmp(const struct ObCharsetInfo* cs,
   wc = 0;
   ob_charset_assert(src);
   *is_valid_unicode = 1;
+  // ASCII fast path: one weight byte per input byte, no UTF-8 decode needed.
+  if (1 == is_sort && NULL != uni_plane) {
+    while (src < se && dst < de && nweights && *src < 0x80 && 0 != *src) {
+      *dst = static_cast<uchar>(ob_ascii_sort_weight(*src));
+      ++dst;
+      ++src;
+      --nweights;
+    }
+  }
   for (;*is_valid_unicode && src < se && dst < de && nweights; nweights--)
   {
     if ((res= cs->cset->mb_wc(cs, &wc, src, se)) <= 0) {
@@ -867,6 +885,12 @@ static void ob_hash_sort_utf8mb4(const ObCharsetInfo *cs, const unsigned char *s
   }
 
   if (NULL == hash_algo) {
+    // ASCII fast path: weight is a single byte and the high byte is always 0.
+    while (src < end && *src < 0x80 && 0 != *src) {
+      ob_hash_add(n1, n2, static_cast<unsigned int>(ob_ascii_sort_weight(*src)));
+      ob_hash_add(n1, n2, 0);
+      ++src;
+    }
     while ((res= ob_mb_wc_utf8mb4(cs, &wc, (unsigned char*) src, (unsigned char*) end)) > 0) {
       ob_tosort_unicode(uni_plane, &wc, cs->state);
       ob_hash_add(n1, n2, (unsigned int) (wc & 0xFF));
@@ -877,6 +901,16 @@ static void ob_hash_sort_utf8mb4(const ObCharsetInfo *cs, const unsigned char *s
       src+= res;
     }
   } else {
+    // ASCII fast path: see above, always two output bytes.
+    while (src < end && *src < 0x80 && 0 != *src) {
+      if (length > HASH_BUFFER_LENGTH - 2) {
+        *n1 = hash_algo((void*) &data, length, *n1);
+        length = 0;
+      }
+      data[length++] = static_cast<unsigned char>(ob_ascii_sort_weight(*src));
+      data[length++] = 0;
+      ++src;
+    }
     while ((res= ob_mb_wc_utf8mb4(cs, &wc, (unsigned char*) src, (unsigned char*) end)) > 0) {
       ob_tosort_unicode(uni_plane, &wc, cs->state);
       if (length > HASH_BUFFER_LENGTH - 2 || (HASH_BUFFER_LENGTH - 2 == length && wc > 0xFFFF)) {
