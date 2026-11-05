@@ -23,8 +23,6 @@
 #include "sql/resolver/ddl/ob_fts_index_builder_util.h"
 #include "share/ob_ddl_error_message_table_operator.h"
 #include "rootserver/ddl_task/ob_sys_ddl_util.h" // for ObSysDDLSchedulerUtil
-#include "lib/string/ob_sql_string.h"
-#include "share/schema/ob_schema_struct.h"
 #include "rootserver/ob_ddl_service_launcher.h" // for ObDDLServiceLauncher
 #include "rootserver/ob_local_management_service.h"
 #include "storage/ddl/ob_ddl_lock.h"
@@ -53,7 +51,6 @@ ObFtsIndexBuildTask::ObFtsIndexBuildTask()
     doc_rowkey_task_submitted_(false),
     domain_index_aux_task_submitted_(false),
     fts_doc_word_task_submitted_(false),
-    fts_doc_word_copied_(false),
     rowkey_doc_task_id_(0),
     doc_rowkey_task_id_(0),
     domain_index_aux_task_id_(0),
@@ -883,18 +880,6 @@ int ObFtsIndexBuildTask::wait_aux_table_complement()
     }
   }
 
-  if (OB_SUCC(ret) && state_finished && !child_task_failed
-      && ObDDLTaskStatus::WAIT_AUX_TABLE_COMPLEMENT == static_cast<ObDDLTaskStatus>(task_status_)
-      && is_fts_task() && !fts_doc_word_copied_) {
-    // fts_doc_word aux has no complement child task; once all other children
-    // finish, fill it with equivalent data copied from fts_index aux table.
-    if (OB_FAIL(copy_doc_word_from_fts_index())) {
-      LOG_WARN("failed to copy fts_doc_word data from fts_index aux", K(ret));
-    } else {
-      fts_doc_word_copied_ = true;
-    }
-  }
-
   if (state_finished || OB_FAIL(ret)) {
     ObDDLTaskStatus next_status;
     ObDDLTaskStatus old_status = static_cast<ObDDLTaskStatus>(task_status_);
@@ -912,122 +897,6 @@ int ObFtsIndexBuildTask::wait_aux_table_complement()
 
     (void)switch_status(next_status, next_status != ObDDLTaskStatus::FAIL, ret);
     ret = OB_SUCCESS;
-  }
-  return ret;
-}
-
-// The fts_doc_word aux table shares the same column set as the fts_index aux
-// table (domain index aux), only the rowkey order differs. Its complement
-// child task is skipped in ObDDLService::create_aux_index, so here we fill it
-// with the equivalent data copied from the fts_index aux table directly,
-// avoiding tokenizing the fulltext column of the base table once again.
-int ObFtsIndexBuildTask::copy_doc_word_from_fts_index()
-{
-  int ret = OB_SUCCESS;
-  ObSchemaGetterGuard schema_guard;
-  const ObTableSchema *src_schema = nullptr;
-  const ObTableSchema *dst_schema = nullptr;
-  const ObDatabaseSchema *db_schema = nullptr;
-  common::ObArray<common::ObString> col_names;
-  if (OB_UNLIKELY(!is_inited_)) {
-    ret = OB_NOT_INIT;
-  } else if (OB_ISNULL(GCTX.sql_proxy_) || OB_ISNULL(GCTX.schema_service_)) {
-    ret = OB_INVALID_ARGUMENT;
-  } else if (OB_INVALID_ID == domain_index_aux_table_id_ ||
-             OB_INVALID_ID == fts_doc_word_aux_table_id_) {
-    ret = OB_ERR_UNEXPECTED;
-  } else if (OB_FAIL(GCTX.schema_service_->get_runtime_schema_guard(schema_guard))) {
-  } else if (OB_FAIL(schema_guard.get_table_schema(domain_index_aux_table_id_, src_schema))) {
-  } else if (OB_ISNULL(src_schema)) {
-    ret = OB_TABLE_NOT_EXIST;
-  } else if (OB_FAIL(schema_guard.get_table_schema(fts_doc_word_aux_table_id_, dst_schema))) {
-  } else if (OB_ISNULL(dst_schema)) {
-    ret = OB_TABLE_NOT_EXIST;
-  } else if (OB_FAIL(schema_guard.get_database_schema(src_schema->get_database_id(), db_schema))) {
-  } else if (OB_ISNULL(db_schema)) {
-    ret = OB_ERR_BAD_DATABASE;
-  } else {
-    // collect dst columns that also exist in src, matched by column name
-    const int64_t dst_col_cnt = dst_schema->get_column_count();
-    for (int64_t i = 0; OB_SUCC(ret) && i < dst_col_cnt; ++i) {
-      const ObColumnSchemaV2 *dst_col = dst_schema->get_column_schema_by_idx(i);
-      if (OB_ISNULL(dst_col)) {
-        ret = OB_ERR_UNEXPECTED;
-      } else if (nullptr != src_schema->get_column_schema(dst_col->get_column_name_str())
-                 && OB_FAIL(col_names.push_back(dst_col->get_column_name_str()))) {
-      }
-    }
-  }
-  if (OB_FAIL(ret)) {
-  } else if (col_names.empty()) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("no common columns between fts_index aux and fts_doc_word aux", K(ret));
-  } else {
-    auto append_quoted_ident = [](ObSqlString &buf, const ObString &name) -> int {
-      // NB: OB_FAIL/OB_SUCC macros assign to the outer 'ret' implicitly,
-      // use plain comparisons inside this captureless lambda instead.
-      int iret = buf.append("`");
-      if (OB_SUCCESS == iret) {
-        for (int64_t i = 0; OB_SUCCESS == iret && i < name.length(); ++i) {
-          if ('`' == name.ptr()[i]) {
-            iret = buf.append("``", 2);
-          } else {
-            iret = buf.append(name.ptr() + i, 1);
-          }
-        }
-        if (OB_SUCCESS == iret) {
-          iret = buf.append("`");
-        }
-      }
-      return iret;
-    };
-    ObSqlString db_ident;
-    ObSqlString src_ident;
-    ObSqlString dst_ident;
-    ObSqlString col_list;
-    if (OB_FAIL(append_quoted_ident(db_ident, db_schema->get_database_name_str()))) {
-    } else if (OB_FAIL(src_ident.append_fmt("%.*s.", static_cast<int>(db_ident.length()), db_ident.ptr()))) {
-    } else if (OB_FAIL(append_quoted_ident(src_ident, src_schema->get_table_name_str()))) {
-    } else if (OB_FAIL(dst_ident.append_fmt("%.*s.", static_cast<int>(db_ident.length()), db_ident.ptr()))) {
-    } else if (OB_FAIL(append_quoted_ident(dst_ident, dst_schema->get_table_name_str()))) {
-    } else {
-      for (int64_t i = 0; OB_SUCC(ret) && i < col_names.count(); ++i) {
-        if (i > 0 && OB_FAIL(col_list.append(","))) {
-        } else if (OB_FAIL(append_quoted_ident(col_list, col_names.at(i)))) {
-        }
-      }
-    }
-    if (OB_FAIL(ret)) {
-    } else {
-      // DELETE first to keep the copy idempotent across task retry / rs switch
-      ObSqlString delete_sql;
-      ObSqlString insert_sql;
-      if (OB_FAIL(delete_sql.append_fmt("DELETE FROM %.*s",
-                                        static_cast<int>(dst_ident.length()), dst_ident.ptr()))) {
-      } else if (OB_FAIL(insert_sql.append_fmt("INSERT INTO %.*s (%.*s) SELECT %.*s FROM %.*s",
-                                               static_cast<int>(dst_ident.length()), dst_ident.ptr(),
-                                               static_cast<int>(col_list.length()), col_list.ptr(),
-                                               static_cast<int>(col_list.length()), col_list.ptr(),
-                                               static_cast<int>(src_ident.length()), src_ident.ptr()))) {
-      } else {
-        ObMySQLTransaction trans;
-        int64_t affected_rows = 0;
-        if (OB_FAIL(trans.start(GCTX.sql_proxy_))) {
-        } else if (OB_FAIL(trans.write(delete_sql.ptr(), delete_sql.length(), affected_rows))) {
-        } else if (OB_FAIL(trans.write(insert_sql.ptr(), insert_sql.length(), affected_rows))) {
-        }
-        if (trans.is_started()) {
-          int tmp_ret = OB_SUCCESS;
-          if (OB_SUCCESS != (tmp_ret = trans.end(OB_SUCC(ret)))) {
-            LOG_ERROR("failed to commit fts_doc_word copy transaction", K(ret), K(tmp_ret));
-            ret = OB_SUCC(ret) ? tmp_ret : ret;
-          }
-        }
-        if (OB_SUCC(ret)) {
-          LOG_INFO("succeed to copy fts_doc_word data from fts_index aux", K(affected_rows), K(insert_sql));
-        }
-      }
-    }
   }
   return ret;
 }

@@ -705,9 +705,6 @@ private:
   int fetch_next_fts_index_rows();
   int fill_generated_fts_cols(blocksstable::ObDatumRow *row);
   int get_output_fts_col_expr_by_type(const ObExprOperatorType &type, ObExpr *&expr);
-  // resolve and cache the FTS pseudo-column exprs once, avoiding per-row linear
-  // scans of MY_SPEC.output_ on the FTS index build path
-  int resolve_fts_exprs();
   bool is_resume_point_saved();
 protected:
   DASOpResultIter scan_result_;
@@ -738,20 +735,6 @@ protected:
   bool in_rescan_;
   ObDomainIndexCache domain_index_;
   ObFTIndexRowCache fts_index_;
-  // cached FTS pseudo-column exprs (ordered as ObFTIndexRowCache::FTS_*_EXPR_TYPE),
-  // valid once fts_exprs_resolved_ is true; spec exprs are immutable for the
-  // lifetime of this operator, so no per-rescan invalidation is needed
-  ObExpr *fts_out_exprs_[share::ObFtsIndexBuilderUtil::OB_FTS_INDEX_OR_DOC_WORD_TABLE_COL_CNT];
-  ObExpr *fts_scan_exprs_[2]; // 0: T_FUN_SYS_WORD_SEGMENT, 1: T_FUN_SYS_DOC_ID
-  bool fts_exprs_resolved_;
-  // reused per-document scratch allocator for LOB string reads on the FTS build path
-  common::ObArenaAllocator fts_lob_allocator_;
-  // when true, the FTS build scan skips ObFTParseHelper::segment and instead
-  // consumes the four pre-materialized FTS columns (word_segment, doc_id,
-  // word_count, doc_length) directly from the source table. Used to build
-  // fts_doc_word by replaying fts_index aux rows and swapping rowkey order,
-  // saving a second full document tokenization pass (build_*_sec -40%).
-  bool skip_fts_tokenization_;
 
   // output_ is used to output data, TSC operator directly invokes output_::get_next_row(s),
   // it points to fold_iter_ in group rescan and iter_tree_ in normal scan.

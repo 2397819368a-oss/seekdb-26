@@ -145,7 +145,6 @@ private:
   int load_dictionary();
   int get_charset_type(ObCharsetType &charset_type);
   int wait_aux_table_complement();
-  int copy_doc_word_from_fts_index();
   int clean_on_failed();
   int submit_drop_fts_index_task();
   int wait_drop_index_finish(bool &is_finish);
@@ -207,7 +206,6 @@ private:
   bool doc_rowkey_task_submitted_;
   bool domain_index_aux_task_submitted_;
   bool fts_doc_word_task_submitted_;
-  bool fts_doc_word_copied_;
   int64_t rowkey_doc_task_id_;
   int64_t doc_rowkey_task_id_;
   int64_t domain_index_aux_task_id_;
