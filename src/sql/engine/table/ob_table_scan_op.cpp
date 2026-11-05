@@ -832,8 +832,10 @@ int ObTableScanOp::prepare_pushdown_limit_param()
     // For FTS match-against queries, the limit can be safely pushed down to the
     // inverted index aux scan rtdef so that the DAAT/TAAT retrieval iter can
     // terminate early, when the MATCH predicate is the sole filter of this scan
-    // (no residual pushdown filters, no ir match filter, no batch rescan).
-    // Otherwise the final limit at TSC is the only safe truncation point.
+    // (no residual pushdown filters, no batch rescan). The ir match_filter is
+    // evaluated by the retrieval iter before counting output rows, so early
+    // termination still outputs exactly limit matched rows. Otherwise the final
+    // limit at TSC is the only safe truncation point.
     if (!MY_SPEC.batch_scan_flag_) {
       ObDASIRScanRtDef *ir_rtdef = find_ir_scan_rtdef(tsc_rtdef_.attach_rtinfo_->attach_rtdef_);
       const ObDASIRScanCtDef *ir_ctdef = (nullptr != ir_rtdef) ?
@@ -841,7 +843,6 @@ int ObTableScanOp::prepare_pushdown_limit_param()
       ObDASScanRtDef *inv_scan_rtdef = (nullptr != ir_rtdef) ?
           ir_rtdef->get_inv_idx_scan_rtdef() : nullptr;
       if (nullptr != ir_ctdef
-          && nullptr == ir_ctdef->match_filter_
           && nullptr != inv_scan_rtdef
           && MY_CTDEF.scan_ctdef_.pd_expr_spec_.pushdown_filters_.empty()
           && (nullptr == MY_CTDEF.lookup_ctdef_
