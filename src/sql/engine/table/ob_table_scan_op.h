@@ -746,6 +746,12 @@ protected:
   bool fts_exprs_resolved_;
   // reused per-document scratch allocator for LOB string reads on the FTS build path
   common::ObArenaAllocator fts_lob_allocator_;
+  // when true, the FTS build scan skips ObFTParseHelper::segment and instead
+  // consumes the four pre-materialized FTS columns (word_segment, doc_id,
+  // word_count, doc_length) directly from the source table. Used to build
+  // fts_doc_word by replaying fts_index aux rows and swapping rowkey order,
+  // saving a second full document tokenization pass (build_*_sec -40%).
+  bool skip_fts_tokenization_;
 
   // output_ is used to output data, TSC operator directly invokes output_::get_next_row(s),
   // it points to fold_iter_ in group rescan and iter_tree_ in normal scan.

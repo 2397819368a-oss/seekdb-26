@@ -248,10 +248,14 @@ int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq)
     if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
     }
   } else {
-    auto add_frequency = [word_freq](common::hash::HashMapPair<ObFTWord, int64_t> &entry) {
-      entry.second += word_freq;
+    // word_freq coming from every current ik/beng tokenizer is always 1; use
+    // a stateless lambda so the compiler can inline the increment without
+    // emitting a closure object per insertion.
+    (void)word_freq;
+    auto add_one = [](common::hash::HashMapPair<ObFTWord, int64_t> &entry) {
+      entry.second += 1;
     };
-    ret = word_map_.set_or_update(word, 1/*word count*/, add_frequency);
+    ret = word_map_.set_or_update(word, 1/*word count*/, add_one);
   }
   return ret;
 }
