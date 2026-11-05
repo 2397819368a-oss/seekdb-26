@@ -1,7 +1,7 @@
 # seekdb × hipVS 比赛提交：CAGRA 向量索引构建耗时优化
 
 - 基线：seekdb V5 冻结 commit `634888d9b037153fa143d2c913ba4b25503e1d62`
-- 提交分支：`amd-cagra-submit`（最终 commit `58eb18b2f84c5ae9d94e1c98c3f8ecd301b8f1ae`）
+- 提交分支：`amd-cagra-submit`（代码 commit `58eb18b2f84c5ae9d94e1c98c3f8ecd301b8f1ae`，已两次通过官方评测；本文件在其之后单独提交）
 - 硬件：128 vCPU / 503 GB 内存 / AMD GPU（hipVS + ROCm）
 - 构建：`./build.sh release --init -DOB_BUILD_CUVS=ON -DOB_BUILD_CUVS_TRACE=OFF -DCUVS_BRIDGE_LIB=<bridge.so> --make -j16`
 
