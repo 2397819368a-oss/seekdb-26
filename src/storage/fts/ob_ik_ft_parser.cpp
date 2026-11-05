@@ -135,10 +135,8 @@ int ObIKFTParser::process_one_char(TokenizeContext &ctx,
 {
   int ret = OB_SUCCESS;
   // proces by char with all segmenters
-  for (ObList<ObIIKProcessor *, ObIAllocator>::iterator iter = segmenters_.begin();
-       OB_SUCC(ret) && iter != segmenters_.end();
-       iter++) {
-    if (OB_FAIL((*iter)->process(ctx))) {
+  for (int64_t i = 0; OB_SUCC(ret) && i < segmenters_.count(); ++i) {
+    if (OB_FAIL(segmenters_.at(i)->process(ctx))) {
     }
   }
   return ret;
@@ -360,7 +358,7 @@ void ObIKFTParser::reset()
       allocator_.free(segmenter);
     }
   }
-  segmenters_.clear();
+  segmenters_.reuse();
 
   cache_main_.reset();
   cache_quan_.reset();
