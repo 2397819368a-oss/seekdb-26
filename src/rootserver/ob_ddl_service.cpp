@@ -4904,6 +4904,11 @@ int ObDDLService::create_aux_index(
       } else if (index_schema.is_vec_delta_buffer_type() || index_schema.is_hybrid_vec_index_log_type() || index_schema.is_vec_index_id_type()) {
         // no need to create ddl task
         result.ddl_task_id_ = OB_INVALID_ID;
+      } else if (share::schema::is_fts_doc_word_aux(index_schema.get_index_type())) {
+        // no need to create complement ddl task: the parent fts task fills
+        // fts_doc_word aux by copying equivalent data from fts_index aux table
+        // directly (same column set), avoiding tokenizing the column again
+        result.ddl_task_id_ = OB_INVALID_ID;
       } else if (OB_FAIL(create_aux_index_task_(data_schema,
                                                 &index_schema,
                                                 create_index_arg,
