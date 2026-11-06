@@ -302,75 +302,6 @@ static inline void ob_tosort_unicode(ObUnicaseInfo *uni_plane, ob_wc_t *wc, unsi
   }
 }
 
-// For utf8mb4_general_ci an ASCII character sorts with the weight of the
-// UPPER-case form (ob_unicase_default maps both 'a' and 'A' to 0x41), so a
-// leading run of ASCII bytes can be compared without decoding UTF-8 and
-// walking the unicode weight pages.  The remaining (possibly multi-byte)
-// suffix is still handled by the generic loop below.
-static inline int ob_ascii_sort_weight(const unsigned char c)
-{
-  return (c >= 'a' && c <= 'z') ? static_cast<int>(c) - ('a' - 'A') : static_cast<int>(c);
-}
-
-static inline int ob_strnncoll_ascii_prefix(const unsigned char *&src,
-                                            const unsigned char *se,
-                                            const unsigned char *&dst,
-                                            const unsigned char *te)
-{
-  int cmp = 0;
-  while (src < se && dst < te && *src < 0x80 && *dst < 0x80 && 0 != *src && 0 != *dst) {
-    const int l_wc = ob_ascii_sort_weight(*src);
-    const int r_wc = ob_ascii_sort_weight(*dst);
-    if (l_wc != r_wc) {
-      cmp = l_wc > r_wc ? 1 : -1;
-      break;
-    }
-    ++src;
-    ++dst;
-  }
-  return cmp;
-}
-
-// For utf8mb4_general_ci, a 3-byte UTF-8 character has sort weight == its
-// codepoint whenever its lead byte is not 0xE1 (verified empirically against
-// the stock binary: lead bytes 0xE0,0xE2..0xEF all preserve codepoint order;
-// 0xE1 contains case-folded Latin/Cyrillic; 4-byte chars 0xF0+ all compare
-// equal and are never handled here).  UTF-8 preserves codepoint order, so a
-// run of such characters on both sides can be compared with memcmp instead of
-// decoding each character and walking the unicode weight pages.
-static inline bool ob_safe_3byte_lead(unsigned char b)
-{
-  return b >= 0xE0 && b <= 0xEF && b != 0xE1;
-}
-
-static inline int ob_strnncoll_safe3_run(const unsigned char *&src,
-                                          const unsigned char *se,
-                                          const unsigned char *&dst,
-                                          const unsigned char *te)
-{
-  if (!ob_safe_3byte_lead(*src) || !ob_safe_3byte_lead(*dst))
-    return 0;
-  const unsigned char *sp = src;
-  while (sp + 2 < se && ob_safe_3byte_lead(sp[0]) &&
-         sp[1] >= 0x80 && sp[1] < 0xC0 &&
-         sp[2] >= 0x80 && sp[2] < 0xC0)
-    sp += 3;
-  const unsigned char *dp = dst;
-  while (dp + 2 < te && ob_safe_3byte_lead(dp[0]) &&
-         dp[1] >= 0x80 && dp[1] < 0xC0 &&
-         dp[2] >= 0x80 && dp[2] < 0xC0)
-    dp += 3;
-  const size_t n = (size_t)((sp - src) < (dp - dst) ? (sp - src) : (dp - dst));
-  if (n > 0) {
-    const int c = memcmp(src, dst, n);
-    if (c != 0)
-      return c > 0 ? 1 : -1;
-    src += n;
-    dst += n;
-  }
-  return 0;
-}
-
 static int ob_strnncoll_utf8mb4(const ObCharsetInfo *cs,
                      const unsigned char *src, size_t srclen,
                      const unsigned char *dst, size_t dstlen,
@@ -380,18 +311,7 @@ static int ob_strnncoll_utf8mb4(const ObCharsetInfo *cs,
   const unsigned char *se = src + srclen;
   const unsigned char *te = dst + dstlen;
   ObUnicaseInfo *uni_plane = cs->caseinfo;
-  int ascii_cmp = ob_strnncoll_ascii_prefix(src, se, dst, te);
-  if (0 != ascii_cmp) {
-    return ascii_cmp;
-  }
   while ( src < se && dst < te ) {
-    int safe_cmp = ob_strnncoll_safe3_run(src, se, dst, te);
-    if (0 != safe_cmp) {
-      return safe_cmp;
-    }
-    if (src >= se || dst >= te) {
-      break;
-    }
     int s_res = ob_mb_wc_utf8mb4(cs, &src_wc, src, se);
     int t_res = ob_mb_wc_utf8mb4(cs, &dst_wc, dst, te);
     if ( s_res <= 0 || t_res <= 0 ) {
@@ -461,18 +381,7 @@ static int ob_strnncollsp_utf8mb4(const ObCharsetInfo *cs,
   ob_wc_t src_wc = 0, dst_wc = 0;
   const unsigned char *se= src + srclen, *te= dst + dstlen;
   ObUnicaseInfo *uni_plane= cs->caseinfo;
-  int ascii_cmp = ob_strnncoll_ascii_prefix(src, se, dst, te);
-  if (0 != ascii_cmp) {
-    return ascii_cmp;
-  }
   while ( src < se && dst < te ) {
-    int safe_cmp = ob_strnncoll_safe3_run(src, se, dst, te);
-    if (0 != safe_cmp) {
-      return safe_cmp;
-    }
-    if (src >= se || dst >= te) {
-      break;
-    }
     int s_res= ob_mb_wc_utf8mb4(cs, &src_wc, src, se);
     int t_res= ob_mb_wc_utf8mb4(cs, &dst_wc, dst, te);
     if ( s_res <= 0 || t_res <= 0 ) {
@@ -551,30 +460,6 @@ size_t ob_strnxfrm_unicode(const ObCharsetInfo *cs,
   wc = 0;
   ob_charset_assert(src);
   *is_valid_unicode = 1;
-  // ASCII fast path: the sort weight of an ASCII byte is known without
-  // decoding UTF-8 or walking the unicode weight pages.
-  if (NULL != uni_plane && 0 == (cs->state & OB_CS_LOWER_SORT)) {
-    while (src < se && dst + 2 <= de && nweights && *src < 0x80 && 0 != *src) {
-      dst = store16be(dst, static_cast<uint16_t>(ob_ascii_sort_weight(*src)));
-      ++src;
-      --nweights;
-    }
-  }
-  // Safe 3-byte fast path: sort weight == codepoint (no case folding), so
-  // extract the codepoint straight from the UTF-8 bytes and store it,
-  // skipping mb_wc decode and the unicode weight page lookup.
-  if (NULL != uni_plane) {
-    while (src + 2 < se && dst + 2 <= de && nweights &&
-           ob_safe_3byte_lead(*src) &&
-           src[1] >= 0x80 && src[1] < 0xC0 &&
-           src[2] >= 0x80 && src[2] < 0xC0) {
-      const uint16_t wc = static_cast<uint16_t>(
-          ((src[0] & 0x0F) << 12) | ((src[1] & 0x3F) << 6) | (src[2] & 0x3F));
-      dst = store16be(dst, wc);
-      src += 3;
-      --nweights;
-    }
-  }
   for (; dst < de && nweights; nweights--)
   {
     if ((res= cs->cset->mb_wc(cs, &wc, src, se)) <= 0) {
@@ -606,15 +491,6 @@ size_t ob_varlen_encoding_for_memcmp(const struct ObCharsetInfo* cs,
   wc = 0;
   ob_charset_assert(src);
   *is_valid_unicode = 1;
-  // ASCII fast path: one weight byte per input byte, no UTF-8 decode needed.
-  if (1 == is_sort && NULL != uni_plane) {
-    while (src < se && dst < de && nweights && *src < 0x80 && 0 != *src) {
-      *dst = static_cast<uchar>(ob_ascii_sort_weight(*src));
-      ++dst;
-      ++src;
-      --nweights;
-    }
-  }
   for (;*is_valid_unicode && src < se && dst < de && nweights; nweights--)
   {
     if ((res= cs->cset->mb_wc(cs, &wc, src, se)) <= 0) {
@@ -954,12 +830,6 @@ static void ob_hash_sort_utf8mb4(const ObCharsetInfo *cs, const unsigned char *s
   }
 
   if (NULL == hash_algo) {
-    // ASCII fast path: weight is a single byte and the high byte is always 0.
-    while (src < end && *src < 0x80 && 0 != *src) {
-      ob_hash_add(n1, n2, static_cast<unsigned int>(ob_ascii_sort_weight(*src)));
-      ob_hash_add(n1, n2, 0);
-      ++src;
-    }
     while ((res= ob_mb_wc_utf8mb4(cs, &wc, (unsigned char*) src, (unsigned char*) end)) > 0) {
       ob_tosort_unicode(uni_plane, &wc, cs->state);
       ob_hash_add(n1, n2, (unsigned int) (wc & 0xFF));
@@ -970,16 +840,6 @@ static void ob_hash_sort_utf8mb4(const ObCharsetInfo *cs, const unsigned char *s
       src+= res;
     }
   } else {
-    // ASCII fast path: see above, always two output bytes.
-    while (src < end && *src < 0x80 && 0 != *src) {
-      if (length > HASH_BUFFER_LENGTH - 2) {
-        *n1 = hash_algo((void*) &data, length, *n1);
-        length = 0;
-      }
-      data[length++] = static_cast<unsigned char>(ob_ascii_sort_weight(*src));
-      data[length++] = 0;
-      ++src;
-    }
     while ((res= ob_mb_wc_utf8mb4(cs, &wc, (unsigned char*) src, (unsigned char*) end)) > 0) {
       ob_tosort_unicode(uni_plane, &wc, cs->state);
       if (length > HASH_BUFFER_LENGTH - 2 || (HASH_BUFFER_LENGTH - 2 == length && wc > 0xFFFF)) {
