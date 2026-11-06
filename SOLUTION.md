@@ -1,7 +1,7 @@
 # seekdb × hipVS 比赛提交：CAGRA 向量索引构建耗时优化
 
 - 基线：seekdb V5 冻结 commit `634888d9b037153fa143d2c913ba4b25503e1d62`
-- 提交分支：`amd-cagra-submit`（代码 commit `58eb18b2f84c5ae9d94e1c98c3f8ecd301b8f1ae`，已两次通过官方评测；本文件在其之后单独提交）
+- 提交分支：`amd-cagra-submit`（代码 commit `2acae91f8b3a7f2e8461f51c853c368fd78ea045`，同一 commit 已九次通过官方评测；本文件在其之上单独提交）
 - 硬件：128 vCPU / 503 GB 内存 / AMD GPU（hipVS + ROCm）
 - 构建：`./build.sh release --init -DOB_BUILD_CUVS=ON -DOB_BUILD_CUVS_TRACE=OFF -DCUVS_BRIDGE_LIB=<bridge.so> --make -j16`
 
@@ -9,15 +9,26 @@
 
 最终默认参数：`nn_descent_niter = 45`、`graph_degree = 128`、
 `intermediate_graph_degree = 128`、`search_width = 4`，搜索侧 itopk 保持基线语义，
-查询缓冲复用，CAGRA 图快照改为 RAM 暂存（memfd）。
+查询缓冲复用，CAGRA 图快照改为 RAM 暂存（memfd），且 cuVS 序列化不再把数据集
+嵌进图文件（`include_dataset = false`）。
 
-官方评测（250K 数据集、固定 nq=4096）同一 commit 两次独立提测：
+官方评测（250K 数据集、固定 nq=4096）同一 commit 九次独立提测：
 
-| 指标 | 第一次 | 第二次 |
+| 指标 | 中位数 | 区间 |
 | --- | ---: | ---: |
-| 构建耗时加速 | **1.739x** | **1.726x** |
-| 查询吞吐 | 1.011x | 1.006x |
-| 硬门槛 / Recall 门槛 | pass | pass |
+| 构建耗时加速 | **2.220x** | 1.830x ~ 2.481x |
+| 查询吞吐 | 1.060x | 1.025x ~ 1.090x |
+| 硬门槛 / Recall 门槛 | pass（9/9） | — |
+
+单次明细（build / query）：
+
+```
+2.249x / 1.090x   2.481x / 1.087x   1.830x / 1.025x
+2.253x / 1.067x   2.220x / 1.086x   2.179x / 1.059x
+1.958x / 1.036x   2.125x / 1.032x   2.238x / 1.060x
+```
+
+同一份二进制的极差约 ±10%，因此下文凡低于该量级的差异都不作为结论依据。
 
 优化是逐步叠加、每一步都由官方评测验证的：
 
@@ -26,7 +37,8 @@
 | `af976dd` | niter 100 → 60 | 1.187x |
 | `caad3b5` | + CAGRA 快照 RAM 暂存（memfd） | 1.325x |
 | `2252a26` | niter 60 → 50，intermediate 256 → 128 | 1.688x |
-| `58eb18b` | niter 50 → 45（**最终**） | **1.739x / 1.726x** |
+| `58eb18b` | niter 50 → 45 | 1.739x / 1.726x |
+| `2acae91` | + 序列化不嵌入数据集（`include_dataset=false`，**最终**） | **2.220x（中位，九次）** |
 
 本地桥接层单测（不受 SQL 层 15 秒 `wait_index_ready` 地板干扰）对比：
 
@@ -96,18 +108,37 @@ CAGRA 构建的三段时间里 NN-DESCENT 建图占绝对主导。对 degree=128
 
 `seekdb_cuvs_bridge.c` 在 handle 内复用 query / neighbor-id / distance 三块设备缓冲
 （`SEEKDB_CUVS_SCRATCH`，默认开启），省掉 `nq=1` 单行查询每次的 3 次 RMM 分配释放
-与 search-params 创建销毁。该项只影响查询吞吐（实测 1.006~1.011x），构建口径不受影响。
+与 search-params 创建销毁。该项只影响查询吞吐（九次实测 1.025~1.090x），构建口径不受影响。
 
-### 2.5 已证伪的方向（边界说明，避免后来者重复踩坑）
+### 2.5 cuVS 序列化不再嵌入数据集（`include_dataset = false`）
+
+文件：`tools/hipvs_bridge/seekdb_cuvs_bridge.c` 中的 `seekdb_cuvs_serialize()`
+
+基线调用 `cuvsCagraSerialize(..., include_dataset = 1)`，会把 250K×128 的原始向量
+一并写进 CAGRA 图文件；这些向量在快照里已由 adaptor 层单独保存，属于重复载荷。
+改为 `include_dataset = 0` 后，同一个索引的快照文件直接缩小一个数据集体量。
+
+单看这一项：官方评测由 1.739x 提升到 **2.249x**（同 commit 九次的区间 1.830x~2.481x）。
+索引图结构与搜索行为完全不变，Recall 门槛照常通过。
+
+### 2.6 已证伪的方向（边界说明，避免后来者重复踩坑）
 
 | 方向 | 结果 |
 | --- | --- |
 | `graph_degree` 128 → 96（niter=40） | `recall@10` 与 `recall@100` 两条 baseline_delta 同时越线 |
-| itopk 下限 `max(4*topk,512)` → `max(4*topk,64)` | `recall@10_minimum`（绝对 0.90）被击穿，三项全挂 |
-| IVF_PQ 建图路径 | 当前 pinned hipVS 头文件虽暴露枚举，但该数据规模与 Recall 门槛下不可用 |
+| itopk 下限 `max(4*topk,512)` → `max(4*topk,256)` | 两条 baseline_delta 越线（绝对门槛仍在，说明只是相对基线的小幅下滑超标） |
+| itopk 下限 → `max(4*topk,64)` 且改为显式赋值 | `recall@10_minimum`（绝对 0.90）被击穿，三项全挂 |
+| IVF_PQ 建图路径 | 该 C API 未暴露训练参数，产出的索引在查询阶段不可用，`gpu_path` 抽检判死 |
+| 快照图字节做 zstd 压缩 | 评测侧构建失败，无法定位原因，判定不可用 |
+| 快照只存图不存向量 | 加载侧成本反升（build 降到约 2.05x），且 @100 baseline_delta 越线 |
+| 完全不做快照持久化 | build 仅 2.310x，与带持久化的版本在噪声内等价，却失去冷启动能力，不采用 |
 
 Hidden250K 对内部候选列表大小（itopk）极敏感，因此最终版本刻意**不降低** itopk，
 保持与冻结基线一致的 raise-only 语义，查询侧只做无 Recall 风险的缓冲复用。
+
+由此也可以给出这条实现路径的时间下限：剩余固定开销主要在 DDL 的数据搬运、
+CAGRA 建图初始化与首条固定查询上，已不属于本仓库可改范围；继续下调 niter、度数或
+itopk 都只会让 Recall 先越线，因此 2.2x 是本提交稳定可达的水平。
 
 ## 3. 复现
 
