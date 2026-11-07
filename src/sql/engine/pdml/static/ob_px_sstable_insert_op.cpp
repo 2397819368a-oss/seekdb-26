@@ -80,16 +80,22 @@ int ObPxMultiPartSSTableInsertOp::get_tablet_info_from_row(
 
   // 2. get slice param
   if (OB_SUCC(ret) && nullptr != tablet_slice_param) {
-    bool found_slice_expr = false;
-    for (int64_t i = 0; OB_SUCC(ret) && !found_slice_expr && i < row.count(); ++i) {
-      if (row.at(i)->type_ == ObItemType::T_PSEUDO_DDL_SLICE_ID) {
-        ObDatum &expr_datum = row.at(i)->locate_expr_datum(get_eval_ctx());
-        tablet_slice_param->slice_id_ = expr_datum.get_int();
-        found_slice_expr = true;
+    if (nullptr != slice_info_expr_) {
+      // resolved once in locate_exprs(), avoid scanning all output exprs per row
+      ObDatum &expr_datum = slice_info_expr_->locate_expr_datum(get_eval_ctx());
+      tablet_slice_param->slice_id_ = expr_datum.get_int();
+    } else {
+      bool found_slice_expr = false;
+      for (int64_t i = 0; OB_SUCC(ret) && !found_slice_expr && i < row.count(); ++i) {
+        if (row.at(i)->type_ == ObItemType::T_PSEUDO_DDL_SLICE_ID) {
+          ObDatum &expr_datum = row.at(i)->locate_expr_datum(get_eval_ctx());
+          tablet_slice_param->slice_id_ = expr_datum.get_int();
+          found_slice_expr = true;
+        }
       }
-    }
-    if (OB_SUCC(ret) && !found_slice_expr) {
-      tablet_slice_param->slice_idx_ = ctx_.get_px_task_id();
+      if (OB_SUCC(ret) && !found_slice_expr) {
+        tablet_slice_param->slice_idx_ = ctx_.get_px_task_id();
+      }
     }
     if (OB_SUCC(ret) && tablet_slice_param->slice_idx_ >= ObTabletSliceParam::MAX_TABLET_SLICE_COUNT) {
       ret = OB_ERR_UNEXPECTED;
