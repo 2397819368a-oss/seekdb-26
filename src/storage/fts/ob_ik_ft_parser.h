@@ -18,7 +18,6 @@
 #define _OCEANBASE_STORAGE_FTS_OB_IK_FT_PARSER_H_
 
 #include "lib/allocator/ob_allocator.h"
-#include "lib/container/ob_se_array.h"
 #include "storage/fts/dict/ob_ft_cache_container.h"
 #include "storage/fts/dict/ob_ft_dict.h"
 #include "storage/fts/dict/ob_ft_dict_def.h"
@@ -41,7 +40,7 @@ public:
         coll_type_(ObCollationType::CS_TYPE_INVALID),
         ctx_(nullptr),
         hub_(hub),
-        segmenters_(),
+        segmenters_(allocator_),
         cache_main_(allocator),
         cache_quan_(allocator),
         cache_stop_(allocator),
@@ -97,9 +96,7 @@ private:
   ObCollationType coll_type_;
   TokenizeContext *ctx_;
   ObFTDictHub *hub_;
-  // fixed set of 4 segmenters (letter, quantifier, cjk, surrogate); an inline
-  // array avoids per-char linked-list pointer chasing in process_one_char
-  common::ObSEArray<ObIIKProcessor *, 4> segmenters_;
+  ObList<ObIIKProcessor *, ObIAllocator> segmenters_;
 
   // For now there's no change of dict in one query, so we can pin dict this level.
   ObFTCacheRangeContainer cache_main_;
