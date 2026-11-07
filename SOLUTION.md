@@ -1,7 +1,7 @@
 # seekdb × hipVS 比赛提交：CAGRA 向量索引构建耗时优化
 
 - 基线：seekdb V5 冻结 commit `634888d9b037153fa143d2c913ba4b25503e1d62`
-- 提交分支：`amd-cagra-submit`（代码 commit `2acae91f8b3a7f2e8461f51c853c368fd78ea045`，同一 commit 已九次通过官方评测；本文件在其之上单独提交）
+- 提交分支：`amd-cagra-submit`（代码 commit `4fa9487c7c1642664455fc36e3e76c379d32c089`，较 `2acae91` 额外加入查询侧常驻大栈 worker）
 - 硬件：128 vCPU / 503 GB 内存 / AMD GPU（hipVS + ROCm）
 - 构建：`./build.sh release --init -DOB_BUILD_CUVS=ON -DOB_BUILD_CUVS_TRACE=OFF -DCUVS_BRIDGE_LIB=<bridge.so> --make -j16`
 
@@ -28,6 +28,14 @@
 1.958x / 1.036x   2.125x / 1.032x   2.238x / 1.060x
 ```
 
+在此基础上追加查询侧「常驻大栈 worker」（§2.5），官方评测：
+
+| 指标 | 数值 |
+| --- | ---: |
+| 构建耗时加速 | 2.207x |
+| 查询吞吐加速 | **1.809x**（此前 1.025x ~ 1.090x） |
+| 硬门槛 / Recall 门槛 | pass |
+
 同一份二进制的极差约 ±10%，因此下文凡低于该量级的差异都不作为结论依据。
 
 优化是逐步叠加、每一步都由官方评测验证的：
@@ -38,7 +46,8 @@
 | `caad3b5` | + CAGRA 快照 RAM 暂存（memfd） | 1.325x |
 | `2252a26` | niter 60 → 50，intermediate 256 → 128 | 1.688x |
 | `58eb18b` | niter 50 → 45 | 1.739x / 1.726x |
-| `2acae91` | + 序列化不嵌入数据集（`include_dataset=false`，**最终**） | **2.220x（中位，九次）** |
+| `2acae91` | + 序列化不嵌入数据集（`include_dataset=false`） | **2.220x（中位，九次）** |
+| `4fa9487c` | + 查询侧常驻大栈 worker（**最终**） | 2.207x / query **1.809x** |
 
 本地桥接层单测（不受 SQL 层 15 秒 `wait_index_ready` 地板干扰）对比：
 
@@ -110,7 +119,22 @@ CAGRA 构建的三段时间里 NN-DESCENT 建图占绝对主导。对 degree=128
 （`SEEKDB_CUVS_SCRATCH`，默认开启），省掉 `nq=1` 单行查询每次的 3 次 RMM 分配释放
 与 search-params 创建销毁。该项只影响查询吞吐（九次实测 1.025~1.090x），构建口径不受影响。
 
-### 2.5 cuVS 序列化不再嵌入数据集（`include_dataset = false`）
+### 2.5 查询侧：常驻大栈 worker（替代每条查询新建线程）
+
+文件：`src/oblib/lib/vector/ob_vsag_adaptor.cpp` 中的 `ob_cuvs_try_search()`
+
+cuVS 的调用需要大栈，基线为**每一条 `ORDER BY ... LIMIT` 查询新建一个 32MB 栈的
+pthread，搜索完再 join**。一条向量检索语句有多少行，就有多少次线程创建与销毁，
+这部分固定开销与 250K 规模下的 top-k 搜索本身同量级。
+
+而 `ob_cuvs_try_search()` 全程持有 `g_ob_cuvs_mu`，查询本来已经串行，线程完全不必
+每次重建。改为进程内一个**常驻的 32MB 栈 worker**，用 mutex + condition_variable 派发
+任务；worker 启动失败时仍回退到原来的「每次新建线程」路径，不影响可用性。
+
+计算路径、搜索参数、输出结果与基线逐字节一致，属于纯调度层改动，Recall 零风险。
+官方评测：查询吞吐由 1.06x 提升到 **1.809x**，构建口径不变（2.207x）。
+
+### 2.6 cuVS 序列化不再嵌入数据集（`include_dataset = false`）
 
 文件：`tools/hipvs_bridge/seekdb_cuvs_bridge.c` 中的 `seekdb_cuvs_serialize()`
 
@@ -121,7 +145,7 @@ CAGRA 构建的三段时间里 NN-DESCENT 建图占绝对主导。对 degree=128
 单看这一项：官方评测由 1.739x 提升到 **2.249x**（同 commit 九次的区间 1.830x~2.481x）。
 索引图结构与搜索行为完全不变，Recall 门槛照常通过。
 
-### 2.6 已证伪的方向（边界说明，避免后来者重复踩坑）
+### 2.7 已证伪的方向（边界说明，避免后来者重复踩坑）
 
 | 方向 | 结果 |
 | --- | --- |
@@ -146,7 +170,8 @@ Hidden250K 对内部候选列表大小（itopk）极敏感，因此最终版本�
 
 由此也可以给出这条实现路径的时间下限：剩余固定开销主要在 DDL 的数据搬运、
 CAGRA 建图初始化与首条固定查询上，已不属于本仓库可改范围；继续下调 niter、度数或
-itopk 都只会让 Recall 先越线，因此 2.2x 是本提交稳定可达的水平。
+itopk 都只会让 Recall 先越线，因此构建 2.2x 是本提交稳定可达的水平；查询侧经由
+§2.5 的线程复用单独提升到 1.809x。
 
 ## 3. 复现
 
