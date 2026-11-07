@@ -20,6 +20,7 @@
 #include <map>
 #include <set>
 #include <mutex>
+#include <condition_variable>
 #include <vector>
 #include <memory>
 #include <limits>
@@ -224,6 +225,56 @@ static void *ob_cuvs_job(void *arg) {
   return nullptr;
 }
 
+// cuVS CAGRA needs a large stack, but a 32MB pthread created + joined per row
+// dominated short top-k searches (one ORDER BY row = one query). All callers of
+// ob_cuvs_job hold g_ob_cuvs_mu for the whole search, so a single persistent
+// worker with the same 32MB stack serves them one at a time; job results are
+// identical, only the thread creation goes away.
+static std::mutex              g_ob_cuvs_worker_mu;
+static std::condition_variable g_ob_cuvs_worker_cv;
+static pthread_t               g_ob_cuvs_worker_tid;
+static ObCuvsJob              *g_ob_cuvs_worker_job = nullptr;
+static bool                    g_ob_cuvs_worker_up = false;
+static bool                    g_ob_cuvs_worker_busy = false;
+static bool                    g_ob_cuvs_worker_done = false;
+
+static void *ob_cuvs_worker_main(void *) {
+  std::unique_lock<std::mutex> lk(g_ob_cuvs_worker_mu);
+  for (;;) {
+    g_ob_cuvs_worker_cv.wait(lk, [] { return g_ob_cuvs_worker_busy; });
+    ObCuvsJob *job = g_ob_cuvs_worker_job;
+    lk.unlock();
+    ob_cuvs_job(job);
+    lk.lock();
+    g_ob_cuvs_worker_busy = false;
+    g_ob_cuvs_worker_done = true;
+    g_ob_cuvs_worker_cv.notify_all();
+  }
+  return nullptr;
+}
+
+// Returns false when the worker could not be started (caller falls back to a
+// per-call thread, so a failure here never breaks a query).
+static bool ob_cuvs_run_job(ObCuvsJob *job) {
+  std::unique_lock<std::mutex> lk(g_ob_cuvs_worker_mu);
+  if (!g_ob_cuvs_worker_up) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 32UL * 1024 * 1024);
+    if (pthread_create(&g_ob_cuvs_worker_tid, &attr, ob_cuvs_worker_main, nullptr) == 0) {
+      g_ob_cuvs_worker_up = true;
+    }
+    pthread_attr_destroy(&attr);
+    if (!g_ob_cuvs_worker_up) { return false; }
+  }
+  g_ob_cuvs_worker_job = job;
+  g_ob_cuvs_worker_done = false;
+  g_ob_cuvs_worker_busy = true;
+  g_ob_cuvs_worker_cv.notify_all();
+  g_ob_cuvs_worker_cv.wait(lk, [] { return g_ob_cuvs_worker_done; });
+  return true;
+}
+
 // [BATCH] Feed nq probe vectors to ONE cuVS call (nq>1). Same large-stack
 // pthread pattern as the single-query path (cuVS overflows the OB worker stack).
 struct ObCuvsBatchJob {
@@ -286,10 +337,12 @@ static bool ob_cuvs_try_search(void *key, vsag::Allocator *alloc,
   std::vector<unsigned> off(topk);
   std::vector<float> dst(topk);
   ObCuvsJob job{ent, query, topk, static_cast<int>(ent->dim_), n, need_build, &off, &dst, -1, false};
-  pthread_t tid; pthread_attr_t attr; pthread_attr_init(&attr);
-  pthread_attr_setstacksize(&attr, 32UL * 1024 * 1024);
-  if (pthread_create(&tid, &attr, ob_cuvs_job, &job) == 0) { pthread_join(tid, nullptr); }
-  pthread_attr_destroy(&attr);
+  if (!ob_cuvs_run_job(&job)) {
+    pthread_t tid; pthread_attr_t attr; pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 32UL * 1024 * 1024);
+    if (pthread_create(&tid, &attr, ob_cuvs_job, &job) == 0) { pthread_join(tid, nullptr); }
+    pthread_attr_destroy(&attr);
+  }
   if (job.built_) { ob_vsag_trace("cuvs_build", key, static_cast<long>(ent->dim_), static_cast<long>(n)); }
   if (ent->bridge_ == nullptr || job.rc_ != 0) { return false; }
   // Post-filter: cuVS returned UNFILTERED top-k. Apply the query's row filter
