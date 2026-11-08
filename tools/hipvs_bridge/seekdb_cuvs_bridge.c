@@ -63,8 +63,8 @@
 #define SK_DEF_SEARCH_WIDTH 4
 
 #define SK_DEF_BUILD_ALGO       1   /* 1 = IVF_PQ (was 2 = NN_DESCENT) */
-#define SK_DEF_IVFPQ_NLISTS     128
-#define SK_DEF_IVFPQ_NPROBES    8
+#define SK_DEF_IVFPQ_NLISTS     256
+#define SK_DEF_IVFPQ_NPROBES    16
 #define SK_DEF_IVFPQ_PQ_DIM     32
 #define SK_DEF_IVFPQ_PQ_BITS    8
 #define SK_DEF_IVFPQ_KMEANS_ITERS 12
