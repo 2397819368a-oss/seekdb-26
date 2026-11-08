@@ -25,10 +25,15 @@
  * a parameter sweep only has to rebuild this one file (seconds) and restart the
  * server, instead of rebuilding seekdb (20-40 min).
  *
- *   SEEKDB_CUVS_BUILD_ALGO   0=AUTO_SELECT 1=IVF_PQ 2=NN_DESCENT(default=2)
- *                            -> only compiled in when the hipVS header exposes
- *                               IVF_PQ / AUTO_SELECT; see SEEKDB_CUVS_HAS_IVF_PQ_ALGO
- *   SEEKDB_CUVS_NITER         nn_descent_niter              (tuned 50; baseline 100)
+ *   SEEKDB_CUVS_BUILD_ALGO   0=AUTO_SELECT 1=IVF_PQ 2=NN_DESCENT(default=1)
+ *                            IVF_PQ needs graph_build_params filled in, see
+ *                            SEEKDB_CUVS_IVFPQ_* below
+ *   SEEKDB_CUVS_IVFPQ_NLISTS  IVF-PQ inverted-list count          (default 128)
+ *   SEEKDB_CUVS_IVFPQ_NPROBES IVF-PQ lists probed per point       (default 8)
+ *   SEEKDB_CUVS_IVFPQ_PQ_DIM  PQ subquantizer dimension           (default 32)
+ *   SEEKDB_CUVS_IVFPQ_PQ_BITS PQ code width in bits [4..8]        (default 8)
+ *   SEEKDB_CUVS_IVFPQ_KMEANS_ITERS kmeans iterations for lists    (default 12)
+ *   SEEKDB_CUVS_NITER         nn_descent_niter              (tuned 45; baseline 100)
  *   SEEKDB_CUVS_GRAPH_DEGREE  graph_degree                  (baseline 128)
  *   SEEKDB_CUVS_INTERMEDIATE  intermediate_graph_degree     (baseline 256)
  *   SEEKDB_CUVS_SEARCH_WIDTH  cagra search_width            (baseline 4)
@@ -56,6 +61,13 @@
 #define SK_DEF_GRAPH_DEGREE 128
 #define SK_DEF_INTERMEDIATE 128
 #define SK_DEF_SEARCH_WIDTH 4
+
+#define SK_DEF_BUILD_ALGO       1   /* 1 = IVF_PQ (was 2 = NN_DESCENT) */
+#define SK_DEF_IVFPQ_NLISTS     128
+#define SK_DEF_IVFPQ_NPROBES    8
+#define SK_DEF_IVFPQ_PQ_DIM     32
+#define SK_DEF_IVFPQ_PQ_BITS    8
+#define SK_DEF_IVFPQ_KMEANS_ITERS 12
 
 static int sk_env_int(const char *name, int def, int lo, int hi)
 {
@@ -108,23 +120,67 @@ static sk_knobs sk_resolve_knobs(void)
   return k;
 }
 
-/* The pinned hipVS header (cuvs/neighbors/cagra.h) exposes AUTO_SELECT and
- * IVF_PQ, so the fast graph-build path is compiled in unconditionally. A runtime
- * failure still falls back to NN_DESCENT in seekdb_cuvs_build(). */
-/* IVF_PQ disabled: degree sweep showed recall is the binding constraint; NN_DESCENT only */
-
-#if defined(SEEKDB_CUVS_HAS_IVF_PQ_ALGO)
+/* The pinned hipVS header (cuvs/neighbors/cagra.h) exposes AUTO_SELECT, IVF_PQ
+ * and NN_DESCENT, so every build path below is compiled in unconditionally. A
+ * runtime failure still falls back to NN_DESCENT in seekdb_cuvs_build(). */
 static int sk_resolve_build_algo(void)
 {
-  switch (sk_env_int("SEEKDB_CUVS_BUILD_ALGO", 2, 0, 2)) {
+  switch (sk_env_int("SEEKDB_CUVS_BUILD_ALGO", SK_DEF_BUILD_ALGO, 0, 2)) {
     case 0:  return (int)AUTO_SELECT;
     case 1:  return (int)IVF_PQ;
     default: return (int)NN_DESCENT;
   }
 }
-#else
-static int sk_resolve_build_algo(void) { return (int)NN_DESCENT; }
-#endif
+
+/* IVF-PQ graph-build parameters. cuvsCagraIndexParamsCreate() already allocates
+ * `graph_build_params` (as an empty cuvsIvfPqParams) and
+ * cuvsCagraIndexParamsDestroy() deletes it, so ownership rules are:
+ *   - never allocate/free the outer struct here;
+ *   - DO create/fill/destroy the two inner handles, which the C API does not own.
+ * Leaving the inner handles NULL makes the IVF-PQ path fall back to cuVS's own
+ * heuristics, which is what the earlier, unusable attempt did. */
+static int sk_fill_ivfpq_params(cuvsCagraIndexParams_t ip)
+{
+  cuvsIvfPqParams_t gp = ip->graph_build_params;
+  if (gp == NULL) { return -1; }
+  if (cuvsIvfPqIndexParamsCreate(&gp->ivf_pq_build_params) != CUVS_SUCCESS) { return -1; }
+  if (cuvsIvfPqSearchParamsCreate(&gp->ivf_pq_search_params) != CUVS_SUCCESS) {
+    cuvsIvfPqIndexParamsDestroy(gp->ivf_pq_build_params);
+    gp->ivf_pq_build_params = NULL;
+    return -1;
+  }
+  gp->ivf_pq_build_params->metric = ip->metric;
+  gp->ivf_pq_build_params->add_data_on_build = true;
+  gp->ivf_pq_build_params->n_lists =
+      (uint32_t)sk_env_int("SEEKDB_CUVS_IVFPQ_NLISTS", SK_DEF_IVFPQ_NLISTS, 1, 65536);
+  gp->ivf_pq_build_params->kmeans_n_iters =
+      (uint32_t)sk_env_int("SEEKDB_CUVS_IVFPQ_KMEANS_ITERS", SK_DEF_IVFPQ_KMEANS_ITERS, 1, 200);
+  gp->ivf_pq_build_params->kmeans_trainset_fraction = 1.0;
+  gp->ivf_pq_build_params->pq_bits =
+      (uint32_t)sk_env_int("SEEKDB_CUVS_IVFPQ_PQ_BITS", SK_DEF_IVFPQ_PQ_BITS, 4, 8);
+  gp->ivf_pq_build_params->pq_dim =
+      (uint32_t)sk_env_int("SEEKDB_CUVS_IVFPQ_PQ_DIM", SK_DEF_IVFPQ_PQ_DIM, 1, 512);
+  gp->ivf_pq_search_params->n_probes =
+      (uint32_t)sk_env_int("SEEKDB_CUVS_IVFPQ_NPROBES", SK_DEF_IVFPQ_NPROBES, 1, 65535);
+  /* The pinned implementation only applies refinement when rate > 1.0, so 1.0
+   * means "off" and costs no extra time. */
+  gp->refinement_rate = 1.0f;
+  return 0;
+}
+
+static void sk_clear_ivfpq_params(cuvsCagraIndexParams_t ip)
+{
+  cuvsIvfPqParams_t gp = (ip == NULL) ? NULL : ip->graph_build_params;
+  if (gp == NULL) { return; }
+  if (gp->ivf_pq_search_params) {
+    cuvsIvfPqSearchParamsDestroy(gp->ivf_pq_search_params);
+    gp->ivf_pq_search_params = NULL;
+  }
+  if (gp->ivf_pq_build_params) {
+    cuvsIvfPqIndexParamsDestroy(gp->ivf_pq_build_params);
+    gp->ivf_pq_build_params = NULL;
+  }
+}
 
 typedef struct {
   cuvsResources_t        res;
@@ -165,6 +221,15 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   h->ip->graph_degree = (size_t)k.graph_degree;
   h->ip->intermediate_graph_degree = (size_t)k.intermediate_degree;
   h->ip->nn_descent_niter = (size_t)k.niter;
+  /* IVF-PQ derives the kNN graph from an IVF-PQ index. cuvsCagraIndexParamsCreate
+   * leaves its graph_build_params empty, so the inner list/PQ handles are filled
+   * here and released once the build call returns. */
+  if (h->ip->build_algo == IVF_PQ) {
+    if (sk_fill_ivfpq_params(h->ip) != 0) {
+      fprintf(stderr, "[seekdb_cuvs] could not fill IVF_PQ params, using NN_DESCENT\n");
+      h->ip->build_algo = NN_DESCENT;
+    }
+  }
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) {
     /* IVF-PQ is the fast path; if the pinned hipVS rejects it at runtime, rebuild
@@ -172,6 +237,7 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
     if ((int)h->ip->build_algo == (int)IVF_PQ) {
       fprintf(stderr, "[seekdb_cuvs] IVF_PQ build failed (%s), retrying NN_DESCENT\n",
               cuvsGetLastErrorText());
+      sk_clear_ivfpq_params(h->ip);
       cuvsCagraIndexDestroy(h->idx);
       cuvsCagraIndexParamsDestroy(h->ip);
       if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
@@ -185,6 +251,7 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
       goto fail_idx;
     }
   }
+  sk_clear_ivfpq_params(h->ip);
   h->n = n; h->dim = dim;
   h->k = k;
   if (sk_verbose()) {
