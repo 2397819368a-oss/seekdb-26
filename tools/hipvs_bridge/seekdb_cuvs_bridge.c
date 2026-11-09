@@ -53,7 +53,7 @@
  * ------------------------------------------------------------------------- */
 #define SK_DEF_NITER        45
 #define SK_DEF_GRAPH_DEGREE 128
-#define SK_DEF_INTERMEDIATE 128
+#define SK_DEF_INTERMEDIATE 256
 #define SK_DEF_SEARCH_WIDTH 4
 
 static int sk_env_int(const char *name, int def, int lo, int hi)
