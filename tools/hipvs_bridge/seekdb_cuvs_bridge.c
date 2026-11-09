@@ -25,9 +25,8 @@
  * a parameter sweep only has to rebuild this one file (seconds) and restart the
  * server, instead of rebuilding seekdb (20-40 min).
  *
- *   SEEKDB_CUVS_BUILD_ALGO   0=AUTO_SELECT 1=IVF_PQ 2=NN_DESCENT(default=2)
- *                            -> only compiled in when the hipVS header exposes
- *                               IVF_PQ / AUTO_SELECT; see SEEKDB_CUVS_HAS_IVF_PQ_ALGO
+ *   SEEKDB_CUVS_BUILD_ALGO   0=AUTO_SELECT 1=IVF_PQ 2=NN_DESCENT 3=ITERATIVE_CAGRA_SEARCH(default=3)
+
  *   SEEKDB_CUVS_NITER         nn_descent_niter              (tuned 50; baseline 100)
  *   SEEKDB_CUVS_GRAPH_DEGREE  graph_degree                  (baseline 128)
  *   SEEKDB_CUVS_INTERMEDIATE  intermediate_graph_degree     (baseline 256)
@@ -113,18 +112,20 @@ static sk_knobs sk_resolve_knobs(void)
  * failure still falls back to NN_DESCENT in seekdb_cuvs_build(). */
 /* IVF_PQ disabled: degree sweep showed recall is the binding constraint; NN_DESCENT only */
 
-#if defined(SEEKDB_CUVS_HAS_IVF_PQ_ALGO)
+/* All graph-build algorithms exposed by the pinned hipVS header are available.
+ * Default is ITERATIVE_CAGRA_SEARCH: the graph is produced by iterated CAGRA
+ * search/optimize instead of 45 NN-descent passes. No extra parameters and no
+ * extra device memory, so the VRAM profile matches the NN-descent build. A
+ * runtime failure still falls back to NN_DESCENT in seekdb_cuvs_build(). */
 static int sk_resolve_build_algo(void)
 {
-  switch (sk_env_int("SEEKDB_CUVS_BUILD_ALGO", 2, 0, 2)) {
+  switch (sk_env_int("SEEKDB_CUVS_BUILD_ALGO", 3, 0, 3)) {
     case 0:  return (int)AUTO_SELECT;
     case 1:  return (int)IVF_PQ;
+    case 3:  return (int)ITERATIVE_CAGRA_SEARCH;
     default: return (int)NN_DESCENT;
   }
 }
-#else
-static int sk_resolve_build_algo(void) { return (int)NN_DESCENT; }
-#endif
 
 typedef struct {
   cuvsResources_t        res;
