@@ -219,10 +219,6 @@ class ObDomainDMLIterator
 {
 public:
   static const int64_t DEFAULT_DOMAIN_ROW_COUNT = 32;
-  // 全文索引写入时跨文档累积的目标行数，用于摊薄 DAS/memtable 的每批次固定开销
-  static const int64_t FTS_DOMAIN_BATCH_ROW_COUNT = 512;
-  // 全文索引辅表的列数：doc_id / word_segment / word_count / doc_length
-  static const int64_t FTS_DOMAIN_COL_CNT = 4;
   typedef common::ObSEArray<blocksstable::ObDatumRow*, DEFAULT_DOMAIN_ROW_COUNT> ObDomainIndexRow;
 
   static int create_domain_dml_iterator(
@@ -264,9 +260,6 @@ protected:
   uint32_t row_idx_;
   // every element holds a pointer to in a sequential array
   ObDomainIndexRow rows_;
-  // 连续的行缓冲，用于把多篇文档的词条行攒成一批返回
-  blocksstable::ObDatumRow *batch_rows_;
-  int64_t batch_capacity_;
   const IntFixedArray *row_projector_;
   ObDASWriteBuffer::Iterator &write_iter_;
   const ObDASDMLBaseCtDef *das_ctdef_;

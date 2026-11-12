@@ -25,7 +25,6 @@
 #include "sql/das/ob_das_dml_vec_iter.h"
 #include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "observer/omt/ob_tenant_srs.h"
-#include "storage/blocksstable/ob_datum_row_utils.h"
 #include "storage/tx/ob_trans_service.h"
 
 using namespace oceanbase::common;
@@ -689,8 +688,6 @@ ObDomainDMLIterator::ObDomainDMLIterator(
   : mode_(ObDomainDMLMode::DOMAIN_DML_MODE_DEFAULT),
     row_idx_(0),
     rows_(),
-    batch_rows_(nullptr),
-    batch_capacity_(0),
     row_projector_(row_projector),
     write_iter_(write_iter),
     das_ctdef_(das_ctdef),
@@ -710,8 +707,6 @@ void ObDomainDMLIterator::reset()
   mode_ = ObDomainDMLMode::DOMAIN_DML_MODE_DEFAULT;
   row_idx_ = 0;
   rows_.reset();
-  batch_rows_ = nullptr;
-  batch_capacity_ = 0;
   row_projector_ = nullptr;
   das_ctdef_ = nullptr;
   main_ctdef_ = nullptr;
@@ -768,8 +763,6 @@ int ObDomainDMLIterator::get_next_domain_row(blocksstable::ObDatumRow *&row)
       rows_.reuse();
       allocator_.reuse();
       row_idx_ = 0;
-      batch_rows_ = nullptr;
-      batch_capacity_ = 0;
       if (OB_UNLIKELY(!das_ctdef_->table_param_.get_data_table().is_domain_index())) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("unexpected error, not domain index", K(ret), K(das_ctdef_->table_param_.get_data_table()));
@@ -799,7 +792,7 @@ int ObDomainDMLIterator::get_next_domain_rows(blocksstable::ObDatumRow *&row, in
 {
   int ret = OB_SUCCESS;
   const ObChunkDatumStore::StoredRow *sr = nullptr;
-  row_count = 0;
+  bool got_row = false;
   if (!das_ctdef_->table_param_.get_data_table().is_fts_index()) { // batch only for fulltext
     if (OB_FAIL(get_next_domain_row(row))) {
       LOG_WARN("fail to get next domain row", K(ret));
@@ -808,40 +801,19 @@ int ObDomainDMLIterator::get_next_domain_rows(blocksstable::ObDatumRow *&row, in
     }
   } else if (OB_FAIL(THIS_WORKER.check_status())) {
     LOG_WARN("worker interrupt", K(ret));
-  } else if (OB_UNLIKELY(!das_ctdef_->table_param_.get_data_table().is_domain_index())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("unexpected error, not domain index", K(ret), K(das_ctdef_->table_param_.get_data_table()));
   } else {
-    // 上一批已被取完时才开启新一批；若仍有一篇文档的行没拷完（超长文档），继续用现有批缓冲续拷
-    if (row_idx_ >= rows_.count()) {
-      rows_.reuse();
-      allocator_.reuse();
-      row_idx_ = 0;
-      batch_rows_ = nullptr;
-      batch_capacity_ = 0;
-    }
-    if (OB_SUCC(ret) && OB_ISNULL(batch_rows_)) {
-      // 复用仓库标准辅助函数分配连续的行缓冲，随后逐行浅拷贝覆盖 datum 指针
-      if (OB_FAIL(blocksstable::ObDatumRowUtils::ob_create_rows(
-              allocator_, FTS_DOMAIN_BATCH_ROW_COUNT, FTS_DOMAIN_COL_CNT, batch_rows_))) {
-        LOG_WARN("fail to create batch rows", K(ret));
-      } else {
-        batch_capacity_ = FTS_DOMAIN_BATCH_ROW_COUNT;
-      }
-    }
-    bool input_end = false;
-    int64_t batch_count = 0;
-    while (OB_SUCC(ret) && !input_end && batch_count < batch_capacity_) {
+    row_count = 0;
+    while (OB_SUCC(ret) && !got_row) {
       if (row_idx_ >= rows_.count()) {
-        // 拉取下一篇文档；此处不能 reuse allocator_，本批已拷的行仍引用其中数据
         rows_.reuse();
+        allocator_.reuse();
         row_idx_ = 0;
-        if (FAILEDx(write_iter_.get_next_row(sr))) {
+        if (OB_UNLIKELY(!das_ctdef_->table_param_.get_data_table().is_domain_index())) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("unexpected error, not domain index", K(ret), K(das_ctdef_->table_param_.get_data_table()));
+        } else if (FAILEDx(write_iter_.get_next_row(sr))) {
           if (OB_ITER_END != ret) {
             LOG_WARN("get next row from result iterator failed", K(ret));
-          } else {
-            ret = OB_SUCCESS;
-            input_end = true;
           }
         } else if (OB_FAIL(generate_domain_rows(sr))) {
           if (ret != OB_ITER_END) {
@@ -851,30 +823,14 @@ int ObDomainDMLIterator::get_next_domain_rows(blocksstable::ObDatumRow *&row, in
           }
         }
       }
-      if (OB_SUCC(ret) && !input_end) {
-        const int64_t remain = batch_capacity_ - batch_count;
-        const int64_t avail = static_cast<int64_t>(rows_.count() - row_idx_);
-        const int64_t copy_cnt = MIN(remain, avail);
-        for (int64_t i = 0; OB_SUCC(ret) && i < copy_cnt; ++i) {
-          if (OB_FAIL(batch_rows_[batch_count + i].shallow_copy(*rows_[row_idx_ + i]))) {
-            LOG_WARN("fail to shallow copy datum row", K(ret), K(i));
-          }
-        }
-        if (OB_SUCC(ret)) {
-          batch_count += copy_cnt;
-          row_idx_ += copy_cnt;
-        }
+      if (OB_SUCC(ret) && row_idx_ < rows_.count()) {
+        row = rows_[row_idx_];
+        row_count = rows_.count() - row_idx_;
+        row_idx_ = rows_.count();
+        got_row = true;
       }
     }
-    if (OB_SUCC(ret)) {
-      if (0 == batch_count) {
-        ret = OB_ITER_END;
-      } else {
-        row = batch_rows_;
-        row_count = batch_count;
-      }
-    }
-    LOG_TRACE("get next domain rows", K(ret), K(batch_count), K(row_idx_), K(row_count), K(rows_), KPC(row), KPC(sr));
+    LOG_TRACE("get next domain rows", K(ret), K(got_row), K(row_idx_), K(row_count), K(rows_), KPC(row), KPC(sr));
   }
   return ret;
 }
