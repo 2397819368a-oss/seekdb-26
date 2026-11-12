@@ -25,11 +25,8 @@
 #include "sql/das/ob_das_dml_vec_iter.h"
 #include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "observer/omt/ob_tenant_srs.h"
+#include "storage/blocksstable/ob_datum_row_utils.h"
 #include "storage/tx/ob_trans_service.h"
-
-#include <condition_variable>
-#include <mutex>
-#include <unordered_map>
 
 using namespace oceanbase::common;
 
@@ -38,213 +35,6 @@ namespace oceanbase
 namespace sql
 {
 
-namespace
-{
-// 全文索引构建分词结果缓存。
-// 主索引表（word, doc_id, word_count, doc_length）与 doc_word 辅表（doc_id, word, ...）
-// 由两个独立的 DDL 子任务构建，两者会对同一份全文文本各做一次完整分词。
-// 这里以 (parser 指纹, 字符集, 原文) 为键缓存第一遍得到的分词结果（词 + 词频 + 文档长度），
-// 第二遍构建时直接复用，跳过重复分词。
-struct FTSegWord final
-{
-  uint32_t len_;
-  uint32_t cnt_;
-};
-
-struct FTSegCacheEntry final
-{
-  int64_t doc_length_;
-  int64_t word_count_;
-  int64_t buf_len_;
-  const char *buf_;   // [word_count_ 个 FTSegWord][按顺序拼接的词串]
-  int64_t text_len_;
-  const char *text_;  // 原文副本，用于命中校验
-};
-
-// 主索引表与 doc_word 辅表由两个并发 DDL 子任务构建，会对同一份文本同时各做一次分词，
-// 因此除了缓存完成结果外，还要让第二遍等待第一遍在飞的计算完成，避免并发重复分词。
-struct FTSegSlot final
-{
-  FTSegSlot() : m(), cv(), state(0), data() {}
-  std::mutex m;
-  std::condition_variable cv;
-  int state;  // 0=computing, 1=ready, 2=failed
-  FTSegCacheEntry data;
-};
-
-struct FTSegCache final
-{
-  FTSegCache() : lock_(), entries_(), mem_size_(0) {}
-  std::mutex lock_;
-  // slot 一旦创建永不删除，等待者持指针在 cv 上睡眠是安全的
-  std::unordered_map<uint64_t, FTSegSlot *> entries_;
-  int64_t mem_size_;
-};
-
-enum FTSegBeginRes
-{
-  FTS_SEG_HIT = 0,     // slot->data 可直接复用
-  FTS_SEG_COMPUTE = 1  // 需要调用方计算；slot 非空时算完必须调 fts_seg_cache_finish
-};
-
-constexpr int64_t FTS_SEG_CACHE_MAX_MEM = 64LL * 1024 * 1024;
-constexpr int64_t FTS_SEG_CACHE_MAX_TEXT = 1024LL * 1024;
-
-uint64_t fts_hash_bytes(const void *data, const int64_t len, uint64_t seed)
-{
-  uint64_t hash = seed;
-  const unsigned char *ptr = static_cast<const unsigned char *>(data);
-  for (int64_t i = 0; i < len; ++i) {
-    hash ^= static_cast<uint64_t>(ptr[i]);
-    hash *= 0x100000001b3ULL;
-  }
-  return hash;
-}
-
-uint64_t fts_hash_string(const ObString &str, uint64_t seed)
-{
-  return str.empty() ? seed : fts_hash_bytes(str.ptr(), str.length(), seed);
-}
-
-FTSegCache &fts_seg_cache()
-{
-  static FTSegCache cache;
-  return cache;
-}
-
-bool fts_seg_text_match(const FTSegSlot *slot, const ObString &fulltext)
-{
-  return slot->data.text_len_ == fulltext.length()
-         && 0 == MEMCMP(slot->data.text_, fulltext.ptr(), fulltext.length());
-}
-
-// 返回 FTS_SEG_HIT 时 slot 的 data 可直接读；返回 FTS_SEG_COMPUTE 且 slot 非空时，
-// 调用方算完后必须调 fts_seg_cache_finish（成功或失败都要调，否则等待者会一直睡眠）。
-FTSegBeginRes fts_seg_cache_begin(const uint64_t key, const ObString &fulltext, FTSegSlot *&slot)
-{
-  FTSegBeginRes res = FTS_SEG_COMPUTE;
-  slot = nullptr;
-  FTSegCache &cache = fts_seg_cache();
-  bool done = false;
-  while (!done) {
-    FTSegSlot *wait_slot = nullptr;
-    {
-      std::lock_guard<std::mutex> guard(cache.lock_);
-      std::unordered_map<uint64_t, FTSegSlot *>::iterator iter = cache.entries_.find(key);
-      if (iter == cache.entries_.end()) {
-        // 第一个见到该 key 的线程负责计算
-        FTSegSlot *new_slot = new (std::nothrow) FTSegSlot();
-        if (nullptr != new_slot) {
-          cache.entries_[key] = new_slot;
-          slot = new_slot;
-        }
-        done = true;
-      } else if (1 == iter->second->state) {
-        // 已完成：校验原文（防御哈希冲突）
-        res = fts_seg_text_match(iter->second, fulltext) ? FTS_SEG_HIT : FTS_SEG_COMPUTE;
-        slot = iter->second;
-        done = true;
-        if (FTS_SEG_COMPUTE == res) {
-          slot = nullptr;  // 哈希冲突，不复用也不覆盖，调用方自行计算且不写缓存
-        }
-      } else if (0 == iter->second->state) {
-        // 另一线程正在计算同一 key：释放全局锁后睡眠等待
-        wait_slot = iter->second;
-      } else {
-        // 之前计算失败：自行计算，不再写缓存
-        done = true;
-      }
-    }
-    if (nullptr != wait_slot) {
-      std::unique_lock<std::mutex> slot_lock(wait_slot->m);
-      while (0 == wait_slot->state) {
-        wait_slot->cv.wait(slot_lock);
-      }
-      // 醒来后回到全局锁重新判断结果
-    }
-  }
-  return res;
-}
-
-void fts_seg_cache_finish(const uint64_t key, FTSegSlot *slot, const ObString &fulltext,
-                          const int64_t doc_length, const int64_t word_count,
-                          const char *buf, const int64_t buf_len, const bool success)
-{
-  if (nullptr != slot) {
-    bool cached = false;
-    char *mem = nullptr;
-    if (success && word_count > 0 && !fulltext.empty() && fulltext.length() <= FTS_SEG_CACHE_MAX_TEXT) {
-      const int64_t mem_size = sizeof(FTSegSlot) + buf_len + fulltext.length();
-      mem = static_cast<char *>(::malloc(buf_len + fulltext.length()));
-      if (nullptr != mem) {
-        FTSegCache &cache = fts_seg_cache();
-        std::lock_guard<std::mutex> guard(cache.lock_);
-        cached = (cache.mem_size_ + mem_size <= FTS_SEG_CACHE_MAX_MEM);
-        if (cached) {
-          cache.mem_size_ += mem_size;
-          MEMCPY(mem, buf, buf_len);
-          MEMCPY(mem + buf_len, fulltext.ptr(), fulltext.length());
-          slot->data.doc_length_ = doc_length;
-          slot->data.word_count_ = word_count;
-          slot->data.buf_len_ = buf_len;
-          slot->data.buf_ = mem;
-          slot->data.text_len_ = fulltext.length();
-          slot->data.text_ = mem + buf_len;
-        }
-      }
-    }
-    {
-      std::lock_guard<std::mutex> slot_guard(slot->m);
-      slot->state = cached ? 1 : 2;
-    }
-    slot->cv.notify_all();
-    if (!cached && nullptr != mem) {
-      ::free(mem);
-    }
-  }
-  UNUSED(key);
-}
-
-int build_fulltext_word_rows(common::ObIAllocator &allocator, const ObDatum &doc_id_datum,
-                             const int64_t doc_length, const int64_t word_count,
-                             const char *buf, const bool is_fts_index_aux,
-                             ObDomainIndexRow &word_rows)
-{
-  int ret = OB_SUCCESS;
-  const int64_t FT_WORD_DOC_COL_CNT = 4;
-  void *rows_buf = nullptr;
-  blocksstable::ObDatumRow *rows = nullptr;
-  const FTSegWord *words = reinterpret_cast<const FTSegWord *>(buf);
-  const char *word_base = buf + word_count * static_cast<int64_t>(sizeof(FTSegWord));
-  // 行格式：[WORD], [DOC_ID], [WORD_COUNT], [DOC_LENGTH] 与 [DOC_ID], [WORD], [WORD_COUNT], [DOC_LENGTH]
-  const int64_t word_idx = is_fts_index_aux ? 0 : 1;
-  const int64_t doc_id_idx = is_fts_index_aux ? 1 : 0;
-  if (OB_ISNULL(rows_buf = reinterpret_cast<char *>(
-                      allocator.alloc(word_count * sizeof(blocksstable::ObDatumRow))))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("failed to alloc memory for full text index rows buffer", K(ret));
-  } else {
-    rows = new (rows_buf) blocksstable::ObDatumRow[word_count];
-    int64_t offset = 0;
-    for (int64_t i = 0; OB_SUCC(ret) && i < word_count; ++i) {
-      if (OB_FAIL(rows[i].init(allocator, FT_WORD_DOC_COL_CNT))) {
-        LOG_WARN("init datum row failed", K(ret), K(FT_WORD_DOC_COL_CNT));
-      } else {
-        rows[i].storage_datums_[word_idx].set_string(word_base + offset, words[i].len_);
-        rows[i].storage_datums_[doc_id_idx].shallow_copy_from_datum(doc_id_datum);
-        rows[i].storage_datums_[2].set_uint(words[i].cnt_);
-        rows[i].storage_datums_[3].set_uint(doc_length);
-        if (OB_FAIL(word_rows.push_back(&rows[i]))) {
-          LOG_WARN("fail to push back row", K(ret), K(rows[i]));
-        } else {
-          offset += words[i].len_;
-        }
-      }
-    }
-  }
-  return ret;
-}
-}  // anonymous namespace
 
 ObObjDatumMapType ObFTIndexRowCache::FTS_INDEX_TYPES[] = {OBJ_DATUM_STRING, OBJ_DATUM_STRING, OBJ_DATUM_8BYTE_DATA, OBJ_DATUM_8BYTE_DATA};
 ObObjDatumMapType ObFTIndexRowCache::FTS_DOC_WORD_TYPES[] = {OBJ_DATUM_STRING, OBJ_DATUM_STRING, OBJ_DATUM_8BYTE_DATA, OBJ_DATUM_8BYTE_DATA};
@@ -257,7 +47,6 @@ ObFTIndexRowCache::ObFTIndexRowCache()
     row_idx_(0),
     is_fts_index_aux_(true),
     helper_(),
-    parser_fp_(0),
     is_inited_(false)
 {
 }
@@ -285,8 +74,6 @@ int ObFTIndexRowCache::init(
   } else {
     row_idx_ = 0;
     is_fts_index_aux_ = is_fts_index_aux;
-    // parser 指纹用于分词缓存键，保证不同 parser / 参数不会互相复用分词结果
-    parser_fp_ = fts_hash_string(parser_properties, fts_hash_string(parser_name, 0xcbf29ce484222325ULL));
     is_inited_ = true;
   }
   if (OB_UNLIKELY(!is_inited_)) {
@@ -310,8 +97,7 @@ int ObFTIndexRowCache::segment(const common::ObObjMeta &ft_obj_meta,
                                                                    doc_id_datum,
                                                                    fulltext,
                                                                    is_fts_index_aux_,
-                                                                   rows_,
-                                                                   parser_fp_))) {
+                                                                   rows_))) {
     LOG_WARN("fail to generate fulltext word rows", K(ret), K(helper_), K(is_fts_index_aux_));
   } else {
     row_idx_ = 0;
@@ -342,7 +128,6 @@ void ObFTIndexRowCache::reset()
   row_idx_ = 0;
   is_fts_index_aux_ = true;
   helper_.reset();
-  parser_fp_ = 0;
   if (OB_NOT_NULL(merge_memctx_)) {
     DESTROY_CONTEXT(merge_memctx_);
     merge_memctx_ = nullptr;
@@ -527,37 +312,21 @@ int ObDASDomainUtils::build_ft_doc_word_infos(
                                                              const ObDatum &doc_id_datum,
                                                              const ObString &fulltext,
                                                              const bool is_fts_index_aux,
-                                                             ObDomainIndexRow &word_rows,
-                                                             const uint64_t parser_fp)
+                                                             ObDomainIndexRow &word_rows)
 {
   int ret = OB_SUCCESS;
+  static int64_t FT_WORD_DOC_COL_CNT = 4;
   static constexpr int64_t FT_MAX_WORD_BUCKET = 1999;
-  static constexpr int64_t FT_SEG_WORD_SIZE = static_cast<int64_t>(sizeof(FTSegWord));
   const int64_t ft_word_bkt_cnt = MIN(MAX(fulltext.length() / 3, 3), FT_MAX_WORD_BUCKET);
   int64_t doc_length = 0;
   ObFTWordMap ft_word_map;
-  FTSegSlot *cache_slot = nullptr;
-  FTSegBeginRes cache_res = FTS_SEG_COMPUTE;
-  const uint64_t cache_key = (0 == parser_fp || 0 == fulltext.length())
-                             ? 0
-                             : fts_hash_bytes(fulltext.ptr(), fulltext.length(),
-                                              parser_fp ^ static_cast<uint64_t>(ft_obj_meta.get_collation_type()));
-  if (0 != cache_key) {
-    cache_res = fts_seg_cache_begin(cache_key, fulltext, cache_slot);
-  }
+  void *rows_buf = nullptr;
+  blocksstable::ObDatumRow *rows = nullptr;
   if (OB_ISNULL(helper) || OB_UNLIKELY(!ft_obj_meta.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arguments", K(ret), KPC(helper), K(ft_obj_meta), K(doc_id_datum));
   } else if (0 == fulltext.length()) {
     ret = OB_ITER_END;
-  } else if (FTS_SEG_HIT == cache_res) {
-    // 命中分词缓存：直接复用已完成的词表，跳过分词与词频统计
-    const FTSegCacheEntry &cached_entry = cache_slot->data;
-    if (OB_FAIL(build_fulltext_word_rows(allocator, doc_id_datum, cached_entry.doc_length_,
-                                         cached_entry.word_count_, cached_entry.buf_,
-                                         is_fts_index_aux, word_rows))) {
-      LOG_WARN("fail to build fulltext word rows from cache", K(ret), K(doc_id_datum));
-    }
   } else if (OB_FAIL(ft_word_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
     LOG_WARN("fail to create ft word map", K(ret), K(ft_word_bkt_cnt));
   } else if (OB_FAIL(segment_and_calc_word_count(allocator,
@@ -570,48 +339,40 @@ int ObDASDomainUtils::build_ft_doc_word_infos(
         K(ft_obj_meta.get_collation_type()), K(fulltext));
   } else if (0 == ft_word_map.size()) {
     ret = OB_ITER_END;
+  } else if (OB_ISNULL(rows_buf = reinterpret_cast<char *>(
+                           allocator.alloc(ft_word_map.size() * sizeof(blocksstable::ObDatumRow))))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("failed to alloc memory for full text index rows buffer", K(ret));
   } else {
-    // 先把词表整理成紧凑格式（词长 + 词频 + 词串），用于生成索引行并写入分词缓存
-    const int64_t word_count = ft_word_map.size();
-    int64_t word_bytes = 0;
-    for (ObFTWordMap::const_iterator iter = ft_word_map.begin(); iter != ft_word_map.end(); ++iter) {
-      word_bytes += iter->first.get_word().get_string().length();
-    }
-    char *buf = nullptr;
-    if (OB_ISNULL(buf = static_cast<char *>(allocator.alloc(word_count * FT_SEG_WORD_SIZE + word_bytes)))) {
-      ret = OB_ALLOCATE_MEMORY_FAILED;
-      LOG_WARN("failed to alloc memory for full text index word buffer", K(ret), K(word_count));
-    } else {
-      FTSegWord *words = reinterpret_cast<FTSegWord *>(buf);
-      char *word_base = buf + word_count * FT_SEG_WORD_SIZE;
-      int64_t offset = 0;
-      int64_t i = 0;
-      for (ObFTWordMap::const_iterator iter = ft_word_map.begin();
-           iter != ft_word_map.end();
-           ++iter, ++i) {
-        const ObString ft_word = iter->first.get_word().get_string();
-        words[i].len_ = static_cast<uint32_t>(ft_word.length());
-        words[i].cnt_ = static_cast<uint32_t>(iter->second);
-        if (ft_word.length() > 0) {
-          MEMCPY(word_base + offset, ft_word.ptr(), ft_word.length());
-          offset += ft_word.length();
+    int64_t i = 0;
+    rows = new (rows_buf) blocksstable::ObDatumRow[ft_word_map.size()];
+    for (ObFTWordMap::const_iterator iter = ft_word_map.begin();
+         OB_SUCC(ret) && iter != ft_word_map.end();
+         ++iter) {
+      if (OB_FAIL(rows[i].init(allocator, FT_WORD_DOC_COL_CNT))) {
+        LOG_WARN("init datum row failed", K(ret), K(FT_WORD_DOC_COL_CNT));
+      } else {
+        const ObFTWord &ft_word = iter->first;
+        const int64_t word_cnt = iter->second;
+        // index row format
+        //  -    FTS_INDEX: [WORD], [DOC_ID], [WORD_COUNT], [DOC_LENGTH]
+        //  - FTS_DOC_WORD: [DOC_ID], [WORD], [WORD_COUNT], [DOC_LENGTH]
+        const int64_t word_idx = is_fts_index_aux ? 0 : 1;
+        const int64_t doc_id_idx = is_fts_index_aux ? 1 : 0;
+        const int64_t word_cnt_idx = 2;
+        const int64_t doc_len_idx = 3;
+        rows[i].storage_datums_[word_idx].set_datum(ft_word.get_word());
+        rows[i].storage_datums_[doc_id_idx].shallow_copy_from_datum(doc_id_datum);
+        rows[i].storage_datums_[word_cnt_idx].set_uint(word_cnt);
+        rows[i].storage_datums_[doc_len_idx].set_uint(doc_length);
+        if (OB_FAIL(word_rows.push_back(&rows[i]))) {
+          LOG_WARN("fail to push back row", K(ret), K(rows[i]));
+        } else {
+          LOG_DEBUG("succeed to add word row", K(ret), K(is_fts_index_aux), K(ft_word), K(word_cnt), K(i), K(rows[i]));
+          ++i;
         }
       }
-      if (OB_FAIL(build_fulltext_word_rows(allocator, doc_id_datum, doc_length, word_count,
-                                           buf, is_fts_index_aux, word_rows))) {
-        LOG_WARN("fail to build fulltext word rows", K(ret));
-      } else if (nullptr != cache_slot) {
-        fts_seg_cache_finish(cache_key, cache_slot, fulltext, doc_length, word_count, buf,
-                             word_count * FT_SEG_WORD_SIZE + word_bytes, true);
-        cache_slot = nullptr;
-      }
     }
-  }
-  // 计算失败/无词时也要唤醒等待者，否则等待该 slot 的并发任务会一直睡眠。
-  // 只有本线程负责计算的 slot（FTS_SEG_COMPUTE）才允许在这里置 failed，
-  // 命中路径下 slot 已是 ready 状态，绝不能覆盖。
-  if (FTS_SEG_COMPUTE == cache_res && nullptr != cache_slot) {
-    fts_seg_cache_finish(cache_key, cache_slot, fulltext, 0, 0, nullptr, 0, false);
   }
   return ret;
 }
@@ -928,6 +689,8 @@ ObDomainDMLIterator::ObDomainDMLIterator(
   : mode_(ObDomainDMLMode::DOMAIN_DML_MODE_DEFAULT),
     row_idx_(0),
     rows_(),
+    batch_rows_(nullptr),
+    batch_capacity_(0),
     row_projector_(row_projector),
     write_iter_(write_iter),
     das_ctdef_(das_ctdef),
@@ -947,6 +710,8 @@ void ObDomainDMLIterator::reset()
   mode_ = ObDomainDMLMode::DOMAIN_DML_MODE_DEFAULT;
   row_idx_ = 0;
   rows_.reset();
+  batch_rows_ = nullptr;
+  batch_capacity_ = 0;
   row_projector_ = nullptr;
   das_ctdef_ = nullptr;
   main_ctdef_ = nullptr;
@@ -1003,6 +768,8 @@ int ObDomainDMLIterator::get_next_domain_row(blocksstable::ObDatumRow *&row)
       rows_.reuse();
       allocator_.reuse();
       row_idx_ = 0;
+      batch_rows_ = nullptr;
+      batch_capacity_ = 0;
       if (OB_UNLIKELY(!das_ctdef_->table_param_.get_data_table().is_domain_index())) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("unexpected error, not domain index", K(ret), K(das_ctdef_->table_param_.get_data_table()));
@@ -1032,7 +799,7 @@ int ObDomainDMLIterator::get_next_domain_rows(blocksstable::ObDatumRow *&row, in
 {
   int ret = OB_SUCCESS;
   const ObChunkDatumStore::StoredRow *sr = nullptr;
-  bool got_row = false;
+  row_count = 0;
   if (!das_ctdef_->table_param_.get_data_table().is_fts_index()) { // batch only for fulltext
     if (OB_FAIL(get_next_domain_row(row))) {
       LOG_WARN("fail to get next domain row", K(ret));
@@ -1041,19 +808,40 @@ int ObDomainDMLIterator::get_next_domain_rows(blocksstable::ObDatumRow *&row, in
     }
   } else if (OB_FAIL(THIS_WORKER.check_status())) {
     LOG_WARN("worker interrupt", K(ret));
+  } else if (OB_UNLIKELY(!das_ctdef_->table_param_.get_data_table().is_domain_index())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected error, not domain index", K(ret), K(das_ctdef_->table_param_.get_data_table()));
   } else {
-    row_count = 0;
-    while (OB_SUCC(ret) && !got_row) {
+    // 上一批已被取完时才开启新一批；若仍有一篇文档的行没拷完（超长文档），继续用现有批缓冲续拷
+    if (row_idx_ >= rows_.count()) {
+      rows_.reuse();
+      allocator_.reuse();
+      row_idx_ = 0;
+      batch_rows_ = nullptr;
+      batch_capacity_ = 0;
+    }
+    if (OB_SUCC(ret) && OB_ISNULL(batch_rows_)) {
+      // 复用仓库标准辅助函数分配连续的行缓冲，随后逐行浅拷贝覆盖 datum 指针
+      if (OB_FAIL(blocksstable::ObDatumRowUtils::ob_create_rows(
+              allocator_, FTS_DOMAIN_BATCH_ROW_COUNT, FTS_DOMAIN_COL_CNT, batch_rows_))) {
+        LOG_WARN("fail to create batch rows", K(ret));
+      } else {
+        batch_capacity_ = FTS_DOMAIN_BATCH_ROW_COUNT;
+      }
+    }
+    bool input_end = false;
+    int64_t batch_count = 0;
+    while (OB_SUCC(ret) && !input_end && batch_count < batch_capacity_) {
       if (row_idx_ >= rows_.count()) {
+        // 拉取下一篇文档；此处不能 reuse allocator_，本批已拷的行仍引用其中数据
         rows_.reuse();
-        allocator_.reuse();
         row_idx_ = 0;
-        if (OB_UNLIKELY(!das_ctdef_->table_param_.get_data_table().is_domain_index())) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("unexpected error, not domain index", K(ret), K(das_ctdef_->table_param_.get_data_table()));
-        } else if (FAILEDx(write_iter_.get_next_row(sr))) {
+        if (FAILEDx(write_iter_.get_next_row(sr))) {
           if (OB_ITER_END != ret) {
             LOG_WARN("get next row from result iterator failed", K(ret));
+          } else {
+            ret = OB_SUCCESS;
+            input_end = true;
           }
         } else if (OB_FAIL(generate_domain_rows(sr))) {
           if (ret != OB_ITER_END) {
@@ -1063,14 +851,30 @@ int ObDomainDMLIterator::get_next_domain_rows(blocksstable::ObDatumRow *&row, in
           }
         }
       }
-      if (OB_SUCC(ret) && row_idx_ < rows_.count()) {
-        row = rows_[row_idx_];
-        row_count = rows_.count() - row_idx_;
-        row_idx_ = rows_.count();
-        got_row = true;
+      if (OB_SUCC(ret) && !input_end) {
+        const int64_t remain = batch_capacity_ - batch_count;
+        const int64_t avail = static_cast<int64_t>(rows_.count() - row_idx_);
+        const int64_t copy_cnt = MIN(remain, avail);
+        for (int64_t i = 0; OB_SUCC(ret) && i < copy_cnt; ++i) {
+          if (OB_FAIL(batch_rows_[batch_count + i].shallow_copy(*rows_[row_idx_ + i]))) {
+            LOG_WARN("fail to shallow copy datum row", K(ret), K(i));
+          }
+        }
+        if (OB_SUCC(ret)) {
+          batch_count += copy_cnt;
+          row_idx_ += copy_cnt;
+        }
       }
     }
-    LOG_TRACE("get next domain rows", K(ret), K(got_row), K(row_idx_), K(row_count), K(rows_), KPC(row), KPC(sr));
+    if (OB_SUCC(ret)) {
+      if (0 == batch_count) {
+        ret = OB_ITER_END;
+      } else {
+        row = batch_rows_;
+        row_count = batch_count;
+      }
+    }
+    LOG_TRACE("get next domain rows", K(ret), K(batch_count), K(row_idx_), K(row_count), K(rows_), KPC(row), KPC(sr));
   }
   return ret;
 }
