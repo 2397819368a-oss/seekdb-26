@@ -220,7 +220,7 @@ class ObDomainDMLIterator
 public:
   static const int64_t DEFAULT_DOMAIN_ROW_COUNT = 32;
   // 全文索引写入时跨文档累积的目标行数，用于摊薄 DAS/memtable 的每批次固定开销
-  static const int64_t FTS_DOMAIN_BATCH_ROW_COUNT = 512;
+  static const int64_t FTS_DOMAIN_BATCH_ROW_COUNT = 2048;
   // 全文索引辅表的列数：doc_id / word_segment / word_count / doc_length
   static const int64_t FTS_DOMAIN_COL_CNT = 4;
   typedef common::ObSEArray<blocksstable::ObDatumRow*, DEFAULT_DOMAIN_ROW_COUNT> ObDomainIndexRow;
